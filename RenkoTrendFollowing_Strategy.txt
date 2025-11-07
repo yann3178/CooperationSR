@@ -1,0 +1,337 @@
+{ **********************************************************************
+  RENKO TREND FOLLOWING STRATEGY v1.0
+
+  Description: Advanced Renko-based trend following strategy with
+  adaptive filters, trailing stops, and comprehensive risk management.
+
+  Platform: MultiCharts (EasyLanguage/PowerLanguage)
+  Author: Generated from specification v1.0
+  Date: 2025-11-07
+
+  Requirements:
+  - Data1: Renko chart (FlexRenko recommended for percentage-based)
+  - Data2: Standard timeframe (for SMA trend filter)
+
+********************************************************************** }
+
+Inputs:
+	{ === RENKO CONFIGURATION === }
+	RenkoType("PERCENTAGE"),		// "FIXED_POINTS", "PERCENTAGE", "ATR_BASED"
+	RenkoSize(0.01),				// 0.01 = 1% for PERCENTAGE mode
+	ATRPeriod(14),					// ATR period if using ATR_BASED
+
+	{ === TREND FILTER === }
+	UseTrendFilter(true),			// Enable/disable SMA trend filter
+	TrendSMAPeriod(200),			// SMA period for trend filter
+	TrendMargin(0.00),				// Margin above/below SMA (0.02 = 2%)
+
+	{ === ENTRY CONDITIONS === }
+	EntryConfirmType("FIRST_GREEN"),	// "FIRST_GREEN" or "SECOND_GREEN"
+	RequireNoWick(false),			// Require no wick on entry brick
+	RequirePriorRed(true),			// Require prior brick was opposite color
+
+	{ === TRADING DIRECTION === }
+	AllowLong(true),				// Enable long positions
+	AllowShort(false),				// Enable short positions
+	ShortTrendFilter(true),			// Require shorts below SMA
+
+	{ === POSITION SIZING === }
+	PositionSizeType("PERCENT_EQUITY"),	// "FIXED" or "PERCENT_EQUITY"
+	PositionSizeValue(0.90),		// 0.90 = 90% of equity
+	InitialCapital(30000),			// Initial capital for backtesting
+
+	{ === STOP MANAGEMENT === }
+	StopType("PREVIOUS_BRICK"),		// "PREVIOUS_BRICK" or "FIXED_PERCENT"
+	StopIntraday(true),				// Check stop in real-time
+	StopTrail(true),				// Enable trailing stop
+	ExitOnReverseBrick(true);		// Exit immediately on reverse brick
+
+Variables:
+	{ Price and indicator variables }
+	SMAValue(0),
+	CurrentBrickColor(""),
+	PreviousBrickColor(""),
+	BrickHigh(0),
+	BrickLow(0),
+	BrickOpen(0),
+	BrickClose(0),
+
+	{ Position tracking }
+	EntryPrice(0),
+	StopLevel(0),
+	CurrentPosition(0),
+	PositionShares(0),
+
+	{ Entry condition flags }
+	IsAboveSMA(false),
+	IsBelowSMA(false),
+	CanEnterLong(false),
+	CanEnterShort(false),
+
+	{ Brick counting }
+	ConsecutiveGreen(0),
+	ConsecutiveRed(0),
+
+	{ For multi-data handling }
+	UseData2(false),
+
+	{ Brick identification }
+	HasLowerWick(false),
+	HasUpperWick(false),
+
+	{ Position sizing }
+	SharesToTrade(0),
+	EquityValue(0);
+
+{ ================================================================
+  INITIALIZATION
+================================================================ }
+
+Once Begin
+	// Check if Data2 is available for SMA calculation
+	If DataCompression = 14 Then Begin  // 14 = Renko in MultiCharts
+		UseData2 = true;
+	End;
+End;
+
+{ ================================================================
+  BRICK ANALYSIS
+================================================================ }
+
+// Get current brick properties
+BrickOpen = Open;
+BrickHigh = High;
+BrickLow = Low;
+BrickClose = Close;
+
+// Determine brick color
+If BrickClose > BrickOpen Then
+	CurrentBrickColor = "GREEN"
+Else If BrickClose < BrickOpen Then
+	CurrentBrickColor = "RED"
+Else
+	CurrentBrickColor = "NEUTRAL";
+
+// Check for wicks
+HasLowerWick = (BrickLow < BrickOpen and CurrentBrickColor = "GREEN") or
+               (BrickLow < BrickClose and CurrentBrickColor = "RED");
+
+HasUpperWick = (BrickHigh > BrickClose and CurrentBrickColor = "GREEN") or
+               (BrickHigh > BrickOpen and CurrentBrickColor = "RED");
+
+// Count consecutive bricks
+If CurrentBrickColor = "GREEN" Then Begin
+	ConsecutiveGreen = ConsecutiveGreen + 1;
+	ConsecutiveRed = 0;
+End Else If CurrentBrickColor = "RED" Then Begin
+	ConsecutiveRed = ConsecutiveRed + 1;
+	ConsecutiveGreen = 0;
+End;
+
+// Store previous brick color
+If CurrentBar > 1 Then Begin
+	If Close[1] > Open[1] Then
+		PreviousBrickColor = "GREEN"
+	Else If Close[1] < Open[1] Then
+		PreviousBrickColor = "RED"
+	Else
+		PreviousBrickColor = "NEUTRAL";
+End;
+
+{ ================================================================
+  TREND FILTER CALCULATION
+================================================================ }
+
+If UseTrendFilter Then Begin
+	// Calculate SMA on Data2 (standard timeframe) if available
+	If UseData2 and CurrentBar > TrendSMAPeriod Then Begin
+		SMAValue = Average(Close of Data2, TrendSMAPeriod);
+	End Else If CurrentBar > TrendSMAPeriod Then Begin
+		// Fallback to Data1 if Data2 not available
+		SMAValue = Average(Close, TrendSMAPeriod);
+	End Else Begin
+		SMAValue = Close;  // Not enough data yet
+	End;
+
+	// Determine if above/below SMA with margin
+	IsAboveSMA = (BrickClose > SMAValue * (1 + TrendMargin));
+	IsBelowSMA = (BrickClose < SMAValue * (1 - TrendMargin));
+End Else Begin
+	// No trend filter - always allow
+	IsAboveSMA = true;
+	IsBelowSMA = true;
+End;
+
+{ ================================================================
+  POSITION SIZING
+================================================================ }
+
+CurrentPosition = MarketPosition;
+
+If PositionSizeType = "PERCENT_EQUITY" Then Begin
+	EquityValue = NetProfit + InitialCapital;
+	SharesToTrade = IntPortion((EquityValue * PositionSizeValue) / BrickClose);
+	If SharesToTrade < 1 Then SharesToTrade = 1;
+End Else Begin
+	SharesToTrade = PositionSizeValue;  // Fixed shares
+End;
+
+{ ================================================================
+  ENTRY CONDITIONS - LONG
+================================================================ }
+
+CanEnterLong = false;
+
+If AllowLong and CurrentPosition = 0 and CurrentBrickColor = "GREEN" Then Begin
+	CanEnterLong = true;
+
+	// Check confirmation type
+	If EntryConfirmType = "SECOND_GREEN" and ConsecutiveGreen < 2 Then
+		CanEnterLong = false;
+
+	// Check no wick requirement
+	If RequireNoWick and HasLowerWick Then
+		CanEnterLong = false;
+
+	// Check prior red requirement
+	If RequirePriorRed and PreviousBrickColor <> "RED" and ConsecutiveGreen > 1 Then
+		CanEnterLong = false;
+
+	// Check trend filter
+	If UseTrendFilter and Not IsAboveSMA Then
+		CanEnterLong = false;
+End;
+
+// Execute long entry
+If CanEnterLong Then Begin
+	Buy("Long Entry") SharesToTrade shares next bar at market;
+	EntryPrice = BrickClose;
+	StopLevel = Close[1];  // Previous brick close
+End;
+
+{ ================================================================
+  ENTRY CONDITIONS - SHORT
+================================================================ }
+
+CanEnterShort = false;
+
+If AllowShort and CurrentPosition = 0 and CurrentBrickColor = "RED" Then Begin
+	CanEnterShort = true;
+
+	// Check confirmation type
+	If EntryConfirmType = "SECOND_GREEN" and ConsecutiveRed < 2 Then
+		CanEnterShort = false;
+
+	// Check no wick requirement
+	If RequireNoWick and HasUpperWick Then
+		CanEnterShort = false;
+
+	// Check prior green requirement (opposite for shorts)
+	If RequirePriorRed and PreviousBrickColor <> "GREEN" and ConsecutiveRed > 1 Then
+		CanEnterShort = false;
+
+	// Check trend filter for shorts
+	If ShortTrendFilter and UseTrendFilter and Not IsBelowSMA Then
+		CanEnterShort = false;
+End;
+
+// Execute short entry
+If CanEnterShort Then Begin
+	SellShort("Short Entry") SharesToTrade shares next bar at market;
+	EntryPrice = BrickClose;
+	StopLevel = Close[1];  // Previous brick close
+End;
+
+{ ================================================================
+  EXIT CONDITIONS - LONG POSITIONS
+================================================================ }
+
+If CurrentPosition = 1 Then Begin  // In long position
+
+	// Update trailing stop
+	If StopTrail and CurrentBrickColor = "GREEN" Then Begin
+		If BrickClose > EntryPrice Then Begin
+			StopLevel = MaxList(StopLevel, Close[1]);
+		End;
+	End;
+
+	// Exit on reverse brick
+	If ExitOnReverseBrick and CurrentBrickColor = "RED" Then Begin
+		Sell("Reverse Brick Exit") next bar at market;
+	End;
+
+	// Stop loss check
+	If StopIntraday Then Begin
+		// Intraday stop check
+		Sell("Stop Loss") next bar at StopLevel stop;
+	End Else Begin
+		// End of brick stop check
+		If BrickClose <= StopLevel Then Begin
+			Sell("Stop Loss EOD") next bar at market;
+		End;
+	End;
+
+	// Reversal to short
+	If AllowShort and CanEnterShort Then Begin
+		Sell("Reversal Exit") next bar at market;
+	End;
+End;
+
+{ ================================================================
+  EXIT CONDITIONS - SHORT POSITIONS
+================================================================ }
+
+If CurrentPosition = -1 Then Begin  // In short position
+
+	// Update trailing stop
+	If StopTrail and CurrentBrickColor = "RED" Then Begin
+		If BrickClose < EntryPrice Then Begin
+			StopLevel = MinList(StopLevel, Close[1]);
+		End;
+	End;
+
+	// Exit on reverse brick
+	If ExitOnReverseBrick and CurrentBrickColor = "GREEN" Then Begin
+		BuyToCover("Reverse Brick Exit") next bar at market;
+	End;
+
+	// Stop loss check
+	If StopIntraday Then Begin
+		// Intraday stop check
+		BuyToCover("Stop Loss") next bar at StopLevel stop;
+	End Else Begin
+		// End of brick stop check
+		If BrickClose >= StopLevel Then Begin
+			BuyToCover("Stop Loss EOD") next bar at market;
+		End;
+	End;
+
+	// Reversal to long
+	If AllowLong and CanEnterLong Then Begin
+		BuyToCover("Reversal Exit") next bar at market;
+	End;
+End;
+
+{ ================================================================
+  VISUALIZATION (Optional - for debugging)
+================================================================ }
+
+// Plot SMA on chart if trend filter is enabled
+If UseTrendFilter Then Begin
+	Plot1(SMAValue, "SMA");
+End;
+
+// Plot stop level
+If CurrentPosition <> 0 Then Begin
+	Plot2(StopLevel, "Stop Level");
+End;
+
+// Color code background based on trend filter
+If UseTrendFilter Then Begin
+	If IsAboveSMA Then
+		SetPlotBGColor(1, Green)
+	Else If IsBelowSMA Then
+		SetPlotBGColor(1, Red)
+	Else
+		SetPlotBGColor(1, Yellow);
+End;
