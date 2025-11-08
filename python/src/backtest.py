@@ -10,11 +10,17 @@ Version: 1.0.0
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 from typing import Optional, Dict, Tuple
 from pathlib import Path
 import json
+
+# Make matplotlib optional
+try:
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
 
 from renko import RenkoBuilder
 from strategy import RenkoTrendStrategy, StrategyConfig
@@ -153,6 +159,10 @@ class Backtest:
         save_path : str, optional
             Path to save plot
         """
+        if not MATPLOTLIB_AVAILABLE:
+            print("Warning: matplotlib not available. Install with: pip install matplotlib")
+            return
+
         if self.results_df is None:
             raise ValueError("No results to plot. Run backtest first.")
 
@@ -218,6 +228,10 @@ class Backtest:
         save_path : str, optional
             Path to save plot
         """
+        if not MATPLOTLIB_AVAILABLE:
+            print("Warning: matplotlib not available. Install with: pip install matplotlib")
+            return
+
         if self.results_df is None:
             raise ValueError("No results to plot. Run backtest first.")
 

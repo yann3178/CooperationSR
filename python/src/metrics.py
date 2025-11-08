@@ -412,7 +412,10 @@ class PerformanceMetrics:
         print(f"Consecutive Wins:       {metrics['consecutive_wins']}")
         print(f"Consecutive Losses:     {metrics['consecutive_losses']}")
         avg_duration = metrics['average_trade_duration']
-        print(f"Avg Trade Duration:     {avg_duration:.1f if avg_duration is not None else 'N/A'}")
+        if avg_duration is not None:
+            print(f"Avg Trade Duration:     {avg_duration:.1f}")
+        else:
+            print(f"Avg Trade Duration:     N/A")
         print()
         print("=" * 60)
 
