@@ -1,0 +1,594 @@
+{ **********************************************************************
+  RENKO TREND FOLLOWING STRATEGY v2.0.1 FINAL
+  CALCULATED RENKO ON STANDARD BARS
+
+  CRITICAL CHANGES FROM v1.0:
+  - Chart Type: STANDARD TIME-BASED BARS (NOT Renko)
+  - Renko bricks calculated IN MEMORY
+  - Orders executed on standard bars
+  - Reproducible results with controlled start price
+  - Compatible with Bar Magnifier, IOG, Portfolio Trader
+
+  Chart Setup:
+  - Data1: 1 minute bars (or 5min, 1sec, etc.) - REQUIRED
+  - Data2: Daily bars (optional) - for SMA calculation
+
+  Platform: MultiCharts (PowerLanguage/EasyLanguage)
+  Author: Generated from Specification v2.0.1
+  Date: 2025-11-08
+
+  ⚠️ IMPORTANT:
+  - This is a SIGNAL (Strategy), NOT an Indicator
+  - Do NOT use Plot1, Plot2 functions (compile error)
+  - Use Print() for debugging
+  - Create separate Indicator for visualization
+
+********************************************************************** }
+
+{ --------------- INPUTS --------------- }
+
+Inputs:
+    // Renko Configuration
+    RENKO_START_PRICE(0),          // 0 = auto, >0 = fixed start
+    RENKO_ROUND_TO(0),             // Round start to multiple (0 = no rounding)
+    RENKO_TYPE("PERCENTAGE"),       // "PERCENTAGE", "FIXED_POINTS", "ATR_BASED"
+    RENKO_SIZE(0.01),              // 0.01 = 1% for PERCENTAGE
+    ATR_PERIOD(14),                // ATR period if ATR_BASED
+    RENKO_ALLOW_MULTIPLE(true),    // Allow multiple bricks per bar
+    RENKO_SHOW_DEBUG(false),       // Print debug to console
+
+    // Trend Filter
+    USE_TREND_FILTER(true),
+    TREND_SMA_PERIOD(200),
+    TREND_MARGIN(0.00),            // 0.02 = 2% margin
+
+    // Entry Configuration
+    ENTRY_CONFIRM_TYPE("FIRST_GREEN"),  // "FIRST_GREEN" or "SECOND_GREEN"
+    REQUIRE_NO_WICK(false),
+    REQUIRE_PRIOR_RED(true),
+
+    // Trading Direction
+    ALLOW_LONG(true),
+    ALLOW_SHORT(false),
+    SHORT_TREND_FILTER(true),
+
+    // Position Sizing
+    POSITION_SIZE_TYPE("PERCENT_EQUITY"),  // "FIXED" or "PERCENT_EQUITY"
+    POSITION_SIZE_VALUE(0.90),
+    INITIAL_CAPITAL(30000),
+
+    // Stop Management
+    STOP_TYPE("PREVIOUS_BRICK"),
+    STOP_INTRADAY(true),
+    STOP_TRAIL(true),
+    EXIT_ON_REVERSE_BRICK(true),
+    MAX_ADVERSE_BRICKS(0);         // 0 = disabled
+
+
+{ --------------- VARIABLES --------------- }
+
+Variables:
+    // Renko State (intrabarpersist for IOG/Bar Magnifier compatibility)
+    intrabarpersist CurrentBrick_Open(0.0),
+    intrabarpersist CurrentBrick_Close(0.0),
+    intrabarpersist CurrentBrick_High(0.0),
+    intrabarpersist CurrentBrick_Low(0.0),
+    intrabarpersist CurrentBrick_Color(0),     // 1=GREEN, -1=RED, 0=uninitialized
+    intrabarpersist PreviousBrick_Close(0.0),
+    intrabarpersist PreviousBrick_Color(0),
+    intrabarpersist BrickSize_Current(0.0),
+    intrabarpersist BrickFormationBar(0),
+    intrabarpersist TotalBricksFormed(0),
+    intrabarpersist ConsecutiveAdverseBricks(0),
+
+    // Trading State
+    intrabarpersist InPosition(false),
+    intrabarpersist PositionDirection(0),      // 1=LONG, -1=SHORT, 0=FLAT
+    intrabarpersist EntryPrice(0.0),
+    intrabarpersist EntryBar(0),               // Protection against double-trade
+    intrabarpersist EntryBrickClose(0.0),
+    intrabarpersist StopLevel(0.0),
+
+    // Indicators
+    SMAValue(0.0),
+    ATRValue(0.0),
+
+    // Initialization
+    StartPrice(0.0),
+    IsInitialized(false),
+
+    // Temporaries
+    BricksFormedThisBar(0),
+    TempPrice(0.0);
+
+
+{ --------------- INITIALIZATION --------------- }
+
+If CurrentBar = 1 Then Begin
+
+    // Determine start price
+    If RENKO_START_PRICE > 0 Then
+        StartPrice = RENKO_START_PRICE
+    Else
+        StartPrice = Close;
+
+    // Apply rounding if requested
+    If RENKO_ROUND_TO > 0 Then
+        StartPrice = IntPortion(StartPrice / RENKO_ROUND_TO) * RENKO_ROUND_TO;
+
+    // Initialize first brick
+    CurrentBrick_Open = StartPrice;
+    CurrentBrick_Close = StartPrice;
+    CurrentBrick_High = High;
+    CurrentBrick_Low = Low;
+    CurrentBrick_Color = 0;
+    PreviousBrick_Color = 0;
+    ConsecutiveAdverseBricks = 0;
+
+    // Calculate initial brick size
+    If RENKO_TYPE = "PERCENTAGE" Then
+        BrickSize_Current = StartPrice * RENKO_SIZE
+    Else If RENKO_TYPE = "FIXED_POINTS" Then
+        BrickSize_Current = RENKO_SIZE
+    Else If RENKO_TYPE = "ATR_BASED" Then Begin
+        ATRValue = AvgTrueRange(ATR_PERIOD);
+        BrickSize_Current = ATRValue * RENKO_SIZE;
+    End
+    Else
+        BrickSize_Current = RENKO_SIZE;
+
+    // Safety check
+    If BrickSize_Current <= 0 Then
+        BrickSize_Current = 1;
+
+    IsInitialized = true;
+
+    // Debug
+    If RENKO_SHOW_DEBUG Then
+        Print("=== RENKO INITIALIZED ===",
+              NewLine, "Date: ", Date:0:0,
+              NewLine, "Start Price: ", StartPrice:0:2,
+              NewLine, "Brick Size: ", BrickSize_Current:0:2,
+              NewLine, "Type: ", RENKO_TYPE);
+
+End;
+
+
+{ --------------- UPDATE BRICK EXTREMES --------------- }
+
+CurrentBrick_High = MaxList(CurrentBrick_High, High);
+CurrentBrick_Low = MinList(CurrentBrick_Low, Low);
+
+
+{ --------------- CALCULATE INDICATORS --------------- }
+
+If USE_TREND_FILTER Then Begin
+    // Try to use Data2 (daily) if available
+    If DataCompression >= 2 Then
+        SMAValue = Average(Close of Data2, TREND_SMA_PERIOD)
+    Else
+        SMAValue = Average(Close, TREND_SMA_PERIOD);
+End;
+
+If RENKO_TYPE = "ATR_BASED" Then
+    ATRValue = AvgTrueRange(ATR_PERIOD);
+
+
+{ --------------- BRICK FORMATION LOGIC --------------- }
+
+BricksFormedThisBar = 0;
+
+
+{ ============================================ }
+{ CHECK FOR UP BRICK FORMATION(S)             }
+{ ============================================ }
+
+While Close >= CurrentBrick_Close + BrickSize_Current Begin
+
+    // Save previous state
+    PreviousBrick_Close = CurrentBrick_Close;
+    PreviousBrick_Color = CurrentBrick_Color;
+
+    // Create new GREEN brick
+    CurrentBrick_Open = CurrentBrick_Close;
+    CurrentBrick_Close = CurrentBrick_Close + BrickSize_Current;
+    CurrentBrick_Color = 1;
+    CurrentBrick_High = High;
+    CurrentBrick_Low = Low;
+
+    // Update counters
+    TotalBricksFormed = TotalBricksFormed + 1;
+    BrickFormationBar = CurrentBar;
+    BricksFormedThisBar = BricksFormedThisBar + 1;
+
+    // Update adverse brick counter
+    If CurrentBrick_Color = PreviousBrick_Color Then
+        ConsecutiveAdverseBricks = 0
+    Else
+        ConsecutiveAdverseBricks = ConsecutiveAdverseBricks + 1;
+
+    // Recalculate brick size if PERCENTAGE
+    If RENKO_TYPE = "PERCENTAGE" Then Begin
+        BrickSize_Current = CurrentBrick_Close * RENKO_SIZE;
+        If BrickSize_Current <= 0 Then BrickSize_Current = 1;
+    End;
+
+    // Debug
+    If RENKO_SHOW_DEBUG Then
+        Print(Date:0:0, " ", Time:0:0, " - GREEN brick #", TotalBricksFormed:0:0,
+              " Close: ", CurrentBrick_Close:0:2,
+              " Size: ", BrickSize_Current:0:2);
+
+    // Check trading signals
+    CheckEntrySignals();
+    CheckExitSignals();
+    UpdateTrailingStop();
+
+    // Break if not allowing multiple bricks
+    If RENKO_ALLOW_MULTIPLE = false Then Break;
+
+End;
+
+
+{ ============================================ }
+{ CHECK FOR DOWN BRICK FORMATION(S)           }
+{ ============================================ }
+
+While Close <= CurrentBrick_Close - BrickSize_Current Begin
+
+    // Save previous state
+    PreviousBrick_Close = CurrentBrick_Close;
+    PreviousBrick_Color = CurrentBrick_Color;
+
+    // Create new RED brick
+    CurrentBrick_Open = CurrentBrick_Close;
+    CurrentBrick_Close = CurrentBrick_Close - BrickSize_Current;
+    CurrentBrick_Color = -1;
+    CurrentBrick_High = High;
+    CurrentBrick_Low = Low;
+
+    // Update counters
+    TotalBricksFormed = TotalBricksFormed + 1;
+    BrickFormationBar = CurrentBar;
+    BricksFormedThisBar = BricksFormedThisBar + 1;
+
+    // Update adverse brick counter
+    If CurrentBrick_Color = PreviousBrick_Color Then
+        ConsecutiveAdverseBricks = 0
+    Else
+        ConsecutiveAdverseBricks = ConsecutiveAdverseBricks + 1;
+
+    // Recalculate brick size if PERCENTAGE
+    If RENKO_TYPE = "PERCENTAGE" Then Begin
+        BrickSize_Current = Absvalue(CurrentBrick_Close) * RENKO_SIZE;
+        If BrickSize_Current <= 0 Then BrickSize_Current = 1;
+    End;
+
+    // Debug
+    If RENKO_SHOW_DEBUG Then
+        Print(Date:0:0, " ", Time:0:0, " - RED brick #", TotalBricksFormed:0:0,
+              " Close: ", CurrentBrick_Close:0:2,
+              " Size: ", BrickSize_Current:0:2);
+
+    // Check trading signals
+    CheckEntrySignals();
+    CheckExitSignals();
+    UpdateTrailingStop();
+
+    // Break if not allowing multiple bricks
+    If RENKO_ALLOW_MULTIPLE = false Then Break;
+
+End;
+
+
+{ --------------- SUBROUTINES --------------- }
+
+{ ============================================ }
+{ SUBROUTINE: Check Entry Signals             }
+{ ============================================ }
+
+Subroutine CheckEntrySignals();
+
+Vars:
+    CanEnterLong(false),
+    CanEnterShort(false),
+    HasWick(false),
+    AboveSMA(false),
+    BelowSMA(false),
+    AlreadyEnteredThisBar(false),
+    ConfirmationMet(false);
+
+Begin
+
+    // Protection against double-trade on same bar
+    If InPosition And EntryBar = CurrentBar Then Return;
+
+
+    { ============================================ }
+    { LONG ENTRY CHECK                            }
+    { ============================================ }
+
+    If ALLOW_LONG = true And InPosition = false And CurrentBrick_Color = 1 Then Begin
+
+        // Check confirmation type
+        If ENTRY_CONFIRM_TYPE = "FIRST_GREEN" Then Begin
+            If REQUIRE_PRIOR_RED = true Then
+                ConfirmationMet = (PreviousBrick_Color = -1)
+            Else
+                ConfirmationMet = true;
+        End
+        Else If ENTRY_CONFIRM_TYPE = "SECOND_GREEN" Then Begin
+            ConfirmationMet = (PreviousBrick_Color = 1);
+        End
+        Else
+            ConfirmationMet = false;
+
+        If Not ConfirmationMet Then Return;
+
+        // Check no wick if required
+        If REQUIRE_NO_WICK = true Then Begin
+            HasWick = (CurrentBrick_Low < CurrentBrick_Open);
+            If HasWick Then Begin
+                If RENKO_SHOW_DEBUG Then
+                    Print("LONG rejected: has wick");
+                Return;
+            End;
+        End;
+
+        // Check trend filter
+        If USE_TREND_FILTER = true Then Begin
+            AboveSMA = (Close > SMAValue * (1 + TREND_MARGIN));
+            If Not AboveSMA Then Begin
+                If RENKO_SHOW_DEBUG Then
+                    Print("LONG rejected: below SMA");
+                Return;
+            End;
+        End;
+
+        // All conditions met - Enter LONG
+        If POSITION_SIZE_TYPE = "FIXED" Then
+            Buy ("Long Entry") POSITION_SIZE_VALUE contracts This Bar On Close
+        Else
+            Buy ("Long Entry") This Bar On Close;
+
+        InPosition = true;
+        PositionDirection = 1;
+        EntryBar = CurrentBar;
+        EntryPrice = Close;
+        EntryBrickClose = CurrentBrick_Close;
+        StopLevel = PreviousBrick_Close;
+        ConsecutiveAdverseBricks = 0;
+
+        If RENKO_SHOW_DEBUG Then
+            Print(">>> LONG ENTRY <<< Bar:", CurrentBar:0:0,
+                  " Brick:", CurrentBrick_Close:0:2, " Stop:", StopLevel:0:2);
+
+    End;
+
+
+    { ============================================ }
+    { SHORT ENTRY CHECK                           }
+    { ============================================ }
+
+    If ALLOW_SHORT = true And InPosition = false And CurrentBrick_Color = -1 Then Begin
+
+        // Check confirmation type
+        If ENTRY_CONFIRM_TYPE = "FIRST_GREEN" Then Begin
+            If REQUIRE_PRIOR_RED = true Then
+                ConfirmationMet = (PreviousBrick_Color = 1)
+            Else
+                ConfirmationMet = true;
+        End
+        Else If ENTRY_CONFIRM_TYPE = "SECOND_GREEN" Then Begin
+            ConfirmationMet = (PreviousBrick_Color = -1);
+        End
+        Else
+            ConfirmationMet = false;
+
+        If Not ConfirmationMet Then Return;
+
+        // Check no wick if required
+        If REQUIRE_NO_WICK = true Then Begin
+            HasWick = (CurrentBrick_High > CurrentBrick_Open);
+            If HasWick Then Begin
+                If RENKO_SHOW_DEBUG Then
+                    Print("SHORT rejected: has wick");
+                Return;
+            End;
+        End;
+
+        // Check trend filter
+        If USE_TREND_FILTER = true And SHORT_TREND_FILTER = true Then Begin
+            BelowSMA = (Close < SMAValue * (1 - TREND_MARGIN));
+            If Not BelowSMA Then Begin
+                If RENKO_SHOW_DEBUG Then
+                    Print("SHORT rejected: above SMA");
+                Return;
+            End;
+        End;
+
+        // All conditions met - Enter SHORT
+        If POSITION_SIZE_TYPE = "FIXED" Then
+            SellShort ("Short Entry") POSITION_SIZE_VALUE contracts This Bar On Close
+        Else
+            SellShort ("Short Entry") This Bar On Close;
+
+        InPosition = true;
+        PositionDirection = -1;
+        EntryBar = CurrentBar;
+        EntryPrice = Close;
+        EntryBrickClose = CurrentBrick_Close;
+        StopLevel = PreviousBrick_Close;
+        ConsecutiveAdverseBricks = 0;
+
+        If RENKO_SHOW_DEBUG Then
+            Print(">>> SHORT ENTRY <<< Bar:", CurrentBar:0:0,
+                  " Brick:", CurrentBrick_Close:0:2, " Stop:", StopLevel:0:2);
+
+    End;
+
+End;
+
+
+{ ============================================ }
+{ SUBROUTINE: Check Exit Signals              }
+{ ============================================ }
+
+Subroutine CheckExitSignals();
+
+Vars:
+    GapThroughStop(false),
+    ExitPrice(0.0);
+
+Begin
+
+    If Not InPosition Then Return;
+
+    // Check for gap through stop
+    If PositionDirection = 1 Then Begin
+        If Open < StopLevel And Open < Close[1] Then
+            GapThroughStop = true;
+    End
+    Else If PositionDirection = -1 Then Begin
+        If Open > StopLevel And Open > Close[1] Then
+            GapThroughStop = true;
+    End;
+
+
+    { EXIT 1: Reverse brick }
+    If EXIT_ON_REVERSE_BRICK = true Then Begin
+
+        If PositionDirection = 1 And CurrentBrick_Color = -1 Then Begin
+            Sell ("Reverse Brick") This Bar On Close;
+            InPosition = false;
+            PositionDirection = 0;
+            If RENKO_SHOW_DEBUG Then Print("<<< LONG EXIT: Reverse Brick >>>");
+            Return;
+        End;
+
+        If PositionDirection = -1 And CurrentBrick_Color = 1 Then Begin
+            BuyToCover ("Reverse Brick") This Bar On Close;
+            InPosition = false;
+            PositionDirection = 0;
+            If RENKO_SHOW_DEBUG Then Print("<<< SHORT EXIT: Reverse Brick >>>");
+            Return;
+        End;
+
+    End;
+
+
+    { EXIT 2: Stop hit (intraday) }
+    If STOP_INTRADAY = true Then Begin
+
+        If PositionDirection = 1 Then Begin
+            If Low <= StopLevel Or GapThroughStop Then Begin
+                ExitPrice = IFF(GapThroughStop, Open, StopLevel);
+                Sell ("Stop Hit") This Bar At ExitPrice Stop;
+                InPosition = false;
+                PositionDirection = 0;
+                If RENKO_SHOW_DEBUG Then Print("<<< LONG EXIT: Stop Hit >>>");
+                Return;
+            End;
+        End;
+
+        If PositionDirection = -1 Then Begin
+            If High >= StopLevel Or GapThroughStop Then Begin
+                ExitPrice = IFF(GapThroughStop, Open, StopLevel);
+                BuyToCover ("Stop Hit") This Bar At ExitPrice Stop;
+                InPosition = false;
+                PositionDirection = 0;
+                If RENKO_SHOW_DEBUG Then Print("<<< SHORT EXIT: Stop Hit >>>");
+                Return;
+            End;
+        End;
+
+    End
+
+    { EXIT 3: Stop end-of-bar }
+    Else Begin
+
+        If PositionDirection = 1 And Close <= StopLevel Then Begin
+            Sell ("Stop EOB") This Bar On Close;
+            InPosition = false;
+            PositionDirection = 0;
+            If RENKO_SHOW_DEBUG Then Print("<<< LONG EXIT: Stop EOB >>>");
+            Return;
+        End;
+
+        If PositionDirection = -1 And Close >= StopLevel Then Begin
+            BuyToCover ("Stop EOB") This Bar On Close;
+            InPosition = false;
+            PositionDirection = 0;
+            If RENKO_SHOW_DEBUG Then Print("<<< SHORT EXIT: Stop EOB >>>");
+            Return;
+        End;
+
+    End;
+
+
+    { EXIT 4: Max adverse bricks }
+    If MAX_ADVERSE_BRICKS > 0 And ConsecutiveAdverseBricks >= MAX_ADVERSE_BRICKS Then Begin
+
+        If PositionDirection = 1 Then Begin
+            Sell ("Max Adverse") This Bar On Close;
+            InPosition = false;
+            PositionDirection = 0;
+            If RENKO_SHOW_DEBUG Then
+                Print("<<< LONG EXIT: Max Adverse Bricks (",
+                      ConsecutiveAdverseBricks:0:0, ") >>>");
+            Return;
+        End;
+
+        If PositionDirection = -1 Then Begin
+            BuyToCover ("Max Adverse") This Bar On Close;
+            InPosition = false;
+            PositionDirection = 0;
+            If RENKO_SHOW_DEBUG Then
+                Print("<<< SHORT EXIT: Max Adverse Bricks (",
+                      ConsecutiveAdverseBricks:0:0, ") >>>");
+            Return;
+        End;
+
+    End;
+
+End;
+
+
+{ ============================================ }
+{ SUBROUTINE: Update Trailing Stop            }
+{ ============================================ }
+
+Subroutine UpdateTrailingStop();
+
+Vars: OldStop(0.0);
+
+Begin
+
+    If Not InPosition Or STOP_TRAIL = false Then Return;
+
+    OldStop = StopLevel;
+
+    // LONG: Trail stop UP with green bricks
+    If PositionDirection = 1 And CurrentBrick_Color = 1 Then Begin
+        If CurrentBrick_Open > StopLevel Then Begin
+            StopLevel = CurrentBrick_Open;
+            If RENKO_SHOW_DEBUG Then
+                Print("LONG Stop trailed: ", OldStop:0:2, " -> ", StopLevel:0:2);
+        End;
+    End;
+
+    // SHORT: Trail stop DOWN with red bricks
+    If PositionDirection = -1 And CurrentBrick_Color = -1 Then Begin
+        If CurrentBrick_Open < StopLevel Then Begin
+            StopLevel = CurrentBrick_Open;
+            If RENKO_SHOW_DEBUG Then
+                Print("SHORT Stop trailed: ", OldStop:0:2, " -> ", StopLevel:0:2);
+        End;
+    End;
+
+End;
+
+
+{ ============================================ }
+{ END OF STRATEGY                             }
+{ ============================================ }

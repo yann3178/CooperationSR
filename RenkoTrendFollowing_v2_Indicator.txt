@@ -1,0 +1,272 @@
+{ **********************************************************************
+  RENKO TREND FOLLOWING - VISUALIZATION INDICATOR v2.0.1
+  COMPANION INDICATOR FOR VISUAL DEBUGGING
+
+  Purpose: Visualize calculated Renko bricks on standard bar chart
+
+  IMPORTANT:
+  - This is an INDICATOR, NOT a Signal/Strategy
+  - Plot functions ARE allowed in Indicators
+  - Apply this ON THE SAME CHART as the Signal for visual confirmation
+  - Uses same logic as Signal to calculate bricks
+
+  Chart Setup:
+  - Data1: Same as Signal (1 minute bars or 5min, etc.)
+  - Apply BOTH Signal AND this Indicator on same chart
+
+  Platform: MultiCharts (PowerLanguage/EasyLanguage)
+  Author: Generated from Specification v2.0.1
+  Date: 2025-11-08
+
+********************************************************************** }
+
+{ --------------- INPUTS --------------- }
+
+Inputs:
+    // Renko Configuration (MUST MATCH Signal inputs!)
+    RENKO_START_PRICE(0),
+    RENKO_ROUND_TO(0),
+    RENKO_TYPE("PERCENTAGE"),
+    RENKO_SIZE(0.01),
+    ATR_PERIOD(14),
+    RENKO_ALLOW_MULTIPLE(true),
+
+    // Visual Options
+    SHOW_BRICK_LEVELS(true),
+    SHOW_BRICK_COUNT(false),
+    PLOT_STYLE(1);  // 1=Lines, 2=Histogram, 3=Points
+
+
+{ --------------- VARIABLES --------------- }
+
+Variables:
+    // Renko State (intrabarpersist for consistency)
+    intrabarpersist CurrentBrick_Open(0.0),
+    intrabarpersist CurrentBrick_Close(0.0),
+    intrabarpersist CurrentBrick_High(0.0),
+    intrabarpersist CurrentBrick_Low(0.0),
+    intrabarpersist CurrentBrick_Color(0),
+    intrabarpersist PreviousBrick_Close(0.0),
+    intrabarpersist PreviousBrick_Color(0),
+    intrabarpersist BrickSize_Current(0.0),
+    intrabarpersist TotalBricksFormed(0),
+
+    // Initialization
+    StartPrice(0.0),
+    IsInitialized(false),
+    ATRValue(0.0),
+
+    // Temporaries
+    BricksFormedThisBar(0);
+
+
+{ --------------- INITIALIZATION --------------- }
+
+If CurrentBar = 1 Then Begin
+
+    // Determine start price
+    If RENKO_START_PRICE > 0 Then
+        StartPrice = RENKO_START_PRICE
+    Else
+        StartPrice = Close;
+
+    // Apply rounding
+    If RENKO_ROUND_TO > 0 Then
+        StartPrice = IntPortion(StartPrice / RENKO_ROUND_TO) * RENKO_ROUND_TO;
+
+    // Initialize first brick
+    CurrentBrick_Open = StartPrice;
+    CurrentBrick_Close = StartPrice;
+    CurrentBrick_High = High;
+    CurrentBrick_Low = Low;
+    CurrentBrick_Color = 0;
+    PreviousBrick_Color = 0;
+
+    // Calculate initial brick size
+    If RENKO_TYPE = "PERCENTAGE" Then
+        BrickSize_Current = StartPrice * RENKO_SIZE
+    Else If RENKO_TYPE = "FIXED_POINTS" Then
+        BrickSize_Current = RENKO_SIZE
+    Else If RENKO_TYPE = "ATR_BASED" Then Begin
+        ATRValue = AvgTrueRange(ATR_PERIOD);
+        BrickSize_Current = ATRValue * RENKO_SIZE;
+    End
+    Else
+        BrickSize_Current = RENKO_SIZE;
+
+    // Safety check
+    If BrickSize_Current <= 0 Then
+        BrickSize_Current = 1;
+
+    IsInitialized = true;
+
+End;
+
+
+{ --------------- UPDATE BRICK EXTREMES --------------- }
+
+CurrentBrick_High = MaxList(CurrentBrick_High, High);
+CurrentBrick_Low = MinList(CurrentBrick_Low, Low);
+
+
+{ --------------- CALCULATE ATR IF NEEDED --------------- }
+
+If RENKO_TYPE = "ATR_BASED" Then
+    ATRValue = AvgTrueRange(ATR_PERIOD);
+
+
+{ --------------- BRICK FORMATION LOGIC --------------- }
+
+BricksFormedThisBar = 0;
+
+
+{ ============================================ }
+{ CHECK FOR UP BRICK FORMATION(S)             }
+{ ============================================ }
+
+While Close >= CurrentBrick_Close + BrickSize_Current Begin
+
+    // Save previous state
+    PreviousBrick_Close = CurrentBrick_Close;
+    PreviousBrick_Color = CurrentBrick_Color;
+
+    // Create new GREEN brick
+    CurrentBrick_Open = CurrentBrick_Close;
+    CurrentBrick_Close = CurrentBrick_Close + BrickSize_Current;
+    CurrentBrick_Color = 1;
+    CurrentBrick_High = High;
+    CurrentBrick_Low = Low;
+
+    // Update counters
+    TotalBricksFormed = TotalBricksFormed + 1;
+    BricksFormedThisBar = BricksFormedThisBar + 1;
+
+    // Recalculate brick size if PERCENTAGE
+    If RENKO_TYPE = "PERCENTAGE" Then Begin
+        BrickSize_Current = CurrentBrick_Close * RENKO_SIZE;
+        If BrickSize_Current <= 0 Then BrickSize_Current = 1;
+    End;
+
+    // Break if not allowing multiple bricks
+    If RENKO_ALLOW_MULTIPLE = false Then Break;
+
+End;
+
+
+{ ============================================ }
+{ CHECK FOR DOWN BRICK FORMATION(S)           }
+{ ============================================ }
+
+While Close <= CurrentBrick_Close - BrickSize_Current Begin
+
+    // Save previous state
+    PreviousBrick_Close = CurrentBrick_Close;
+    PreviousBrick_Color = CurrentBrick_Color;
+
+    // Create new RED brick
+    CurrentBrick_Open = CurrentBrick_Close;
+    CurrentBrick_Close = CurrentBrick_Close - BrickSize_Current;
+    CurrentBrick_Color = -1;
+    CurrentBrick_High = High;
+    CurrentBrick_Low = Low;
+
+    // Update counters
+    TotalBricksFormed = TotalBricksFormed + 1;
+    BricksFormedThisBar = BricksFormedThisBar + 1;
+
+    // Recalculate brick size if PERCENTAGE
+    If RENKO_TYPE = "PERCENTAGE" Then Begin
+        BrickSize_Current = Absvalue(CurrentBrick_Close) * RENKO_SIZE;
+        If BrickSize_Current <= 0 Then BrickSize_Current = 1;
+    End;
+
+    // Break if not allowing multiple bricks
+    If RENKO_ALLOW_MULTIPLE = false Then Break;
+
+End;
+
+
+{ --------------- VISUAL OUTPUT --------------- }
+
+If SHOW_BRICK_LEVELS Then Begin
+
+    // Plot brick close level
+    Plot1(CurrentBrick_Close, "Brick Close");
+
+    // Plot brick open level
+    Plot2(CurrentBrick_Open, "Brick Open");
+
+    // Plot brick size (as histogram on separate axis)
+    Plot3(BrickSize_Current, "Brick Size");
+
+    // Color by brick direction
+    If CurrentBrick_Color = 1 Then Begin
+        // GREEN brick
+        SetPlotColor(1, Green);
+        SetPlotColor(2, DarkGreen);
+        SetPlotColor(3, Green);
+        SetPlotWidth(1, 3);
+        SetPlotWidth(2, 1);
+    End
+    Else If CurrentBrick_Color = -1 Then Begin
+        // RED brick
+        SetPlotColor(1, Red);
+        SetPlotColor(2, DarkRed);
+        SetPlotColor(3, Red);
+        SetPlotWidth(1, 3);
+        SetPlotWidth(2, 1);
+    End
+    Else Begin
+        // Uninitialized
+        SetPlotColor(1, Gray);
+        SetPlotColor(2, Gray);
+        SetPlotColor(3, Gray);
+        SetPlotWidth(1, 1);
+    End;
+
+    // Apply plot style
+    If PLOT_STYLE = 1 Then Begin
+        // Lines
+        SetPlotStyle(1, 1);  // Solid line
+        SetPlotStyle(2, 2);  // Dashed line
+    End
+    Else If PLOT_STYLE = 2 Then Begin
+        // Histogram
+        SetPlotStyle(1, 6);  // Histogram
+        SetPlotStyle(2, 6);
+    End
+    Else Begin
+        // Points
+        SetPlotStyle(1, 3);  // Points
+        SetPlotStyle(2, 3);
+    End;
+
+End;
+
+
+{ Optional: Display brick count as text on chart }
+If SHOW_BRICK_COUNT And BricksFormedThisBar > 0 Then Begin
+    // Note: Text drawing requires additional coding with Text_New
+    // Example:
+    // Value1 = Text_New(Date, Time, High,
+    //          "Brick #" + NumToStr(TotalBricksFormed, 0));
+    // Text_SetColor(Value1, Yellow);
+
+    // For now, just print to console
+    Print("Brick #", TotalBricksFormed:0:0, " formed at bar ", CurrentBar:0:0);
+End;
+
+
+{ --------------- COMMENTARY --------------- }
+
+Commentary("Renko Brick Close: " + NumToStr(CurrentBrick_Close, 2) +
+          NewLine + "Brick Color: " + IFF(CurrentBrick_Color = 1, "GREEN",
+                                          IFF(CurrentBrick_Color = -1, "RED", "NEUTRAL")) +
+          NewLine + "Total Bricks: " + NumToStr(TotalBricksFormed, 0) +
+          NewLine + "Brick Size: " + NumToStr(BrickSize_Current, 2) +
+          NewLine + "Bricks This Bar: " + NumToStr(BricksFormedThisBar, 0));
+
+
+{ ============================================ }
+{ END OF INDICATOR                            }
+{ ============================================ }
