@@ -22,40 +22,38 @@ Variables:
 NewStopLevel = CurrentStopLevel;
 
 // Only trail if enabled
-If StopTrail = false Then Begin
-	YANN_RENKO_CalculateTrailingStop = NewStopLevel;
-	Return;
-End;
+If StopTrail = true Then Begin
 
-// Only trail for PREVIOUS_BRICK stop type
-If StopType <> "PREVIOUS_BRICK" Then Begin
-	YANN_RENKO_CalculateTrailingStop = NewStopLevel;
-	Return;
-End;
+	// Only trail for PREVIOUS_BRICK stop type
+	If StopType = "PREVIOUS_BRICK" Then Begin
 
-// ========================================
-// Trail Stop for LONG Position
-// ========================================
-If PositionDir = 1 Then Begin
-	// For LONG: Trail stop UP on GREEN bricks
-	If CurrentBrickColor = 1 Then Begin
-		// New stop = previous brick close
-		NewStopLevel = MaxList(CurrentStopLevel, PreviousBrickClose);
-	End;
-End
+		// ========================================
+		// Trail Stop for LONG Position
+		// ========================================
+		If PositionDir = 1 Then Begin
+			// For LONG: Trail stop UP on GREEN bricks
+			If CurrentBrickColor = 1 Then Begin
+				// New stop = previous brick close
+				NewStopLevel = MaxList(CurrentStopLevel, PreviousBrickClose);
+			End;
+		End
 
-// ========================================
-// Trail Stop for SHORT Position
-// ========================================
-Else If PositionDir = -1 Then Begin
-	// For SHORT: Trail stop DOWN on RED bricks
-	If CurrentBrickColor = -1 Then Begin
-		// New stop = previous brick close
-		// For shorts, stop should be lower (better) than current
-		If PreviousBrickClose < CurrentStopLevel Or CurrentStopLevel = 0 Then Begin
-			NewStopLevel = PreviousBrickClose;
+		// ========================================
+		// Trail Stop for SHORT Position
+		// ========================================
+		Else If PositionDir = -1 Then Begin
+			// For SHORT: Trail stop DOWN on RED bricks
+			If CurrentBrickColor = -1 Then Begin
+				// New stop = previous brick close
+				// For shorts, stop should be lower (better) than current
+				If PreviousBrickClose < CurrentStopLevel Or CurrentStopLevel = 0 Then Begin
+					NewStopLevel = PreviousBrickClose;
+				End;
+			End;
 		End;
+
 	End;
+
 End;
 
 // Return new stop level

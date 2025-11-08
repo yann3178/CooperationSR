@@ -18,61 +18,61 @@ Inputs:
 	TrendMargin(NumericSimple);            // Trend margin (e.g., 0.01 for 1%)
 
 Variables:
-	var0(false),                           // Signal flag
 	TrendOK(false),
 	EntryConditionMet(false);
 
-// Initialize
-var0 = false;
+// Initialize to false
+YANN_RENKO_CheckShortEntry = false;
 
 // Check if short trades allowed
 If AllowShort = false Then Begin
 	YANN_RENKO_CheckShortEntry = false;
-	Return;
-End;
-
-// ========================================
-// Check Trend Filter (if enabled)
-// ========================================
-TrendOK = true;
-
-If UseTrendFilter Then Begin
-	// For SHORT: Price must be below SMA - margin
-	TrendOK = CurrentPrice < (TrendSMA * (1 - TrendMargin));
-End;
-
-If TrendOK = false Then Begin
-	YANN_RENKO_CheckShortEntry = false;
-	Return;
-End;
-
-// ========================================
-// Check Entry Confirmation
-// ========================================
-EntryConditionMet = false;
-
-// FIRST_RED: Current brick is RED (after optional GREEN check)
-If EntryConfirmType = "FIRST_GREEN" Then Begin
-	// Note: For SHORT, we use "FIRST_RED" as equivalent to "FIRST_GREEN" for longs
-	If CurrentBrickColor = -1 Then Begin
-		If RequirePriorRed Then Begin
-			// For shorts, require previous brick to be GREEN (opposite)
-			EntryConditionMet = (PreviousBrickColor = 1);
-		End
-		Else Begin
-			// Any previous color OK
-			EntryConditionMet = true;
-		End;
-	End;
 End
+Else Begin
 
-// SECOND_RED: Current and previous both RED
-Else If EntryConfirmType = "SECOND_GREEN" Then Begin
-	// Note: For SHORT, we use "SECOND_RED" as equivalent to "SECOND_GREEN" for longs
-	If CurrentBrickColor = -1 And PreviousBrickColor = -1 Then Begin
-		EntryConditionMet = true;
+	// ========================================
+	// Check Trend Filter (if enabled)
+	// ========================================
+	TrendOK = true;
+
+	If UseTrendFilter Then Begin
+		// For SHORT: Price must be below SMA - margin
+		TrendOK = CurrentPrice < (TrendSMA * (1 - TrendMargin));
 	End;
-End;
 
-// Return result
-YANN_RENKO_CheckShortEntry = EntryConditionMet;
+	If TrendOK Then Begin
+
+		// ========================================
+		// Check Entry Confirmation
+		// ========================================
+		EntryConditionMet = false;
+
+		// FIRST_RED: Current brick is RED (after optional GREEN check)
+		// Note: For SHORT, we use "FIRST_RED" as equivalent to "FIRST_GREEN" for longs
+		If EntryConfirmType = "FIRST_GREEN" Then Begin
+			If CurrentBrickColor = -1 Then Begin
+				If RequirePriorRed Then Begin
+					// For shorts, require previous brick to be GREEN (opposite)
+					EntryConditionMet = (PreviousBrickColor = 1);
+				End
+				Else Begin
+					// Any previous color OK
+					EntryConditionMet = true;
+				End;
+			End;
+		End
+
+		// SECOND_RED: Current and previous both RED
+		// Note: For SHORT, we use "SECOND_RED" as equivalent to "SECOND_GREEN" for longs
+		Else If EntryConfirmType = "SECOND_GREEN" Then Begin
+			If CurrentBrickColor = -1 And PreviousBrickColor = -1 Then Begin
+				EntryConditionMet = true;
+			End;
+		End;
+
+		// Set return value
+		YANN_RENKO_CheckShortEntry = EntryConditionMet;
+
+	End;
+
+End;
