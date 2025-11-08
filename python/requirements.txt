@@ -1,0 +1,25 @@
+# Core dependencies
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+
+# Optional: For downloading data
+yfinance>=0.2.0
+
+# Optional: For Jupyter notebooks
+jupyter>=1.0.0
+notebook>=7.0.0
+ipywidgets>=8.0.0
+
+# Optional: For enhanced visualization
+plotly>=5.14.0
+seaborn>=0.12.0
+
+# Optional: For optimization
+scipy>=1.10.0
+
+# Development dependencies (optional)
+pytest>=7.0.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
