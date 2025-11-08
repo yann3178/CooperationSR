@@ -618,12 +618,12 @@ End;
 
 If SignalExit Then Begin
     If PositionDirection = 1 Then Begin
-        Sell ("Reverse") Next Bar at Market;
+        Sell ("LX_Reverse") Next Bar at Market;
         If RENKO_SHOW_DEBUG Then Print(">>> LONG EXIT ORDER PLACED <<<");
     End;
 
     If PositionDirection = -1 Then Begin
-        BuyToCover ("Reverse") Next Bar at Market;
+        BuyToCover ("SX_Reverse") Next Bar at Market;
         If RENKO_SHOW_DEBUG Then Print(">>> SHORT EXIT ORDER PLACED <<<");
     End;
 
@@ -656,7 +656,7 @@ If InPosition Then Begin
         If PositionDirection = 1 Then Begin
             If Low <= StopLevel Or GapThroughStop Then Begin
                 ExitPrice = IFF(GapThroughStop, Open, StopLevel);
-                Sell ("STOP") Next Bar At ExitPrice Stop;
+                Sell ("LX_Stop") Next Bar At ExitPrice Stop;
                 InPosition = false;
                 PositionDirection = 0;
                 If RENKO_SHOW_DEBUG Then Print("<<< LONG EXIT: Stop Hit >>>");
@@ -666,7 +666,7 @@ If InPosition Then Begin
         If PositionDirection = -1 Then Begin
             If High >= StopLevel Or GapThroughStop Then Begin
                 ExitPrice = IFF(GapThroughStop, Open, StopLevel);
-                BuyToCover ("STOP") Next Bar At ExitPrice Stop;
+                BuyToCover ("SX_Stop") Next Bar At ExitPrice Stop;
                 InPosition = false;
                 PositionDirection = 0;
                 If RENKO_SHOW_DEBUG Then Print("<<< SHORT EXIT: Stop Hit >>>");
@@ -679,14 +679,14 @@ If InPosition Then Begin
     Else Begin
 
         If PositionDirection = 1 And Close <= StopLevel Then Begin
-            Sell ("STOP EOB") Next Bar at Market;
+            Sell ("LX_StopEOB") Next Bar at Market;
             InPosition = false;
             PositionDirection = 0;
             If RENKO_SHOW_DEBUG Then Print("<<< LONG EXIT: Stop EOB >>>");
         End;
 
         If PositionDirection = -1 And Close >= StopLevel Then Begin
-            BuyToCover ("STOP EOB") Next Bar at Market;
+            BuyToCover ("SX_StopEOB") Next Bar at Market;
             InPosition = false;
             PositionDirection = 0;
             If RENKO_SHOW_DEBUG Then Print("<<< SHORT EXIT: Stop EOB >>>");
@@ -698,7 +698,7 @@ If InPosition Then Begin
     If MAX_ADVERSE_BRICKS > 0 And ConsecutiveAdverseBricks >= MAX_ADVERSE_BRICKS Then Begin
 
         If PositionDirection = 1 Then Begin
-            Sell ("Max Adverse") Next Bar at Market;
+            Sell ("LX_MaxAdverse") Next Bar at Market;
             InPosition = false;
             PositionDirection = 0;
             If RENKO_SHOW_DEBUG Then
@@ -706,7 +706,7 @@ If InPosition Then Begin
         End;
 
         If PositionDirection = -1 Then Begin
-            BuyToCover ("Max Adverse") Next Bar at Market;
+            BuyToCover ("SX_MaxAdverse") Next Bar at Market;
             InPosition = false;
             PositionDirection = 0;
             If RENKO_SHOW_DEBUG Then
