@@ -1,13 +1,30 @@
-# Renko Trend Following Strategy for MultiCharts
+# Renko Trend Following Strategy
 
 ## Vue d'ensemble
 
 Stratégie de trading trend-following basée sur les briques Renko avec filtres adaptatifs, trailing stops dynamiques et gestion complète du risque.
 
 **Version:** 1.0
-**Plateforme:** MultiCharts (EasyLanguage/PowerLanguage)
+**Plateformes:** MultiCharts (EasyLanguage) + Python
 **Type:** Trend Following
 **Direction:** Long/Short (configurable)
+
+## 🚀 Deux implémentations disponibles
+
+### 1️⃣ MultiCharts (EasyLanguage)
+- Fichier: `RenkoTrendFollowing_Strategy.txt`
+- Documentation: Ce README
+- Pour traders utilisant MultiCharts
+- Exécution native sur plateforme de trading
+
+### 2️⃣ Python (Complet)
+- Dossier: `python/`
+- Documentation: `python/README.md`
+- Pour backtesting, recherche, optimisation
+- Standalone, flexible, open-source
+
+**👉 Pour démarrer avec Python:** Voir `python/QUICKSTART.md`
+**👉 Pour MultiCharts:** Continuer ce README ci-dessous
 
 ## Caractéristiques principales
 
