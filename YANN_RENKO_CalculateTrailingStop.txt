@@ -1,0 +1,62 @@
+{*******************************************************************************
+ * Function: YANN_RENKO_CalculateTrailingStop
+ * Version: 2.0.1
+ * Description: Calculates trailing stop level for Renko strategy
+ *
+ * Returns: New stop level (numeric)
+ *******************************************************************************}
+
+Inputs:
+	PositionDir(NumericSimple),            // 1=LONG, -1=SHORT, 0=FLAT
+	CurrentStopLevel(NumericSimple),       // Current stop level
+	CurrentBrickClose(NumericSimple),      // Current brick close price
+	PreviousBrickClose(NumericSimple),     // Previous brick close price
+	CurrentBrickColor(NumericSimple),      // 1=GREEN, -1=RED, 0=NEUTRAL
+	StopTrail(TrueFalse),                  // Trailing stop enabled
+	StopType(StringSimple);                // "PREVIOUS_BRICK", "FIXED_PERCENT", etc.
+
+Variables:
+	NewStopLevel(0.0);
+
+// Initialize with current stop
+NewStopLevel = CurrentStopLevel;
+
+// Only trail if enabled
+If StopTrail = false Then Begin
+	YANN_RENKO_CalculateTrailingStop = NewStopLevel;
+	Return;
+End;
+
+// Only trail for PREVIOUS_BRICK stop type
+If StopType <> "PREVIOUS_BRICK" Then Begin
+	YANN_RENKO_CalculateTrailingStop = NewStopLevel;
+	Return;
+End;
+
+// ========================================
+// Trail Stop for LONG Position
+// ========================================
+If PositionDir = 1 Then Begin
+	// For LONG: Trail stop UP on GREEN bricks
+	If CurrentBrickColor = 1 Then Begin
+		// New stop = previous brick close
+		NewStopLevel = MaxList(CurrentStopLevel, PreviousBrickClose);
+	End;
+End
+
+// ========================================
+// Trail Stop for SHORT Position
+// ========================================
+Else If PositionDir = -1 Then Begin
+	// For SHORT: Trail stop DOWN on RED bricks
+	If CurrentBrickColor = -1 Then Begin
+		// New stop = previous brick close
+		// For shorts, stop should be lower (better) than current
+		If PreviousBrickClose < CurrentStopLevel Or CurrentStopLevel = 0 Then Begin
+			NewStopLevel = PreviousBrickClose;
+		End;
+	End;
+End;
+
+// Return new stop level
+YANN_RENKO_CalculateTrailingStop = NewStopLevel;
