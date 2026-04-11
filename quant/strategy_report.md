@@ -343,4 +343,27 @@ sample.  The strategy I ship is the best risk-adjusted trade-off I could
 find: **beats QQQ CAGR by 1.6 pp while cutting the worst peak-to-trough
 drawdown from −83 % to −20 %**.
 
+---
+
+## Appendix: Kevin Davey's monthly breakout algorithm
+
+A follow-up investigation tested Davey's 4/5-month breakout algorithm
+(see `davey_addendum.md` for the full write-up) on:
+
+* The original 5-ETF universe he published (SPY, XLF, EEM, GLD, USO)
+* Extended 10-ETF universes with equal-active and inverse-vol allocations
+* Substitution of the SMA-150 trend filter in Trend-Parity by the
+  Davey breakout on QQQ/IEF/GLD
+* 49-point grid search of (x1, x2)
+* Blends of Trend-Parity with Davey portfolios at {0, 25, 50, 75, 100} %
+
+**Result**: the original Davey configuration on his 5-ETF universe only
+delivers **5.50 % CAGR / −34.6 % MaxDD** over 2007-2026, well below
+both QQQ and SPY buy & hold (USO and EEM are structurally toxic for
+the window).  The best-optimised (8, 8) version of the rule on Trend-
+Parity's own assets produces the **lowest drawdown in the entire
+project (−14.6 %)** but at 8.6 % CAGR, still under QQQ.  Blending with
+Trend-Parity only dilutes the Pareto frontier: the optimal
+Davey weight is **0 %**.  The shipped strategy stays unchanged.
+
 — end —
