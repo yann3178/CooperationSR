@@ -6,9 +6,11 @@ Strategie (Long uniquement) :
   - Periode      : 2018-01-01 -> aujourd'hui.
   - Indicateurs  : Bandes de Bollinger (20, 2.0), Swing Highs / Swing Lows
                    detectes sur une fenetre glissante de 5 jours (pivots).
-  - Entree (Long): La veille, le Low a touche/franchi a la baisse la bande
-                   de Bollinger inferieure ET aujourd'hui le Close casse a la
-                   hausse le dernier Swing High valide (Break of Structure).
+  - Entree (Long): Depuis que la structure est baissiere (un Close est passe
+                   sous le dernier Swing Low valide), le prix a cloture sous la
+                   bande de Bollinger inferieure (crossover en cloture) ET
+                   aujourd'hui le Close casse a la hausse le dernier Swing High
+                   valide (Break of Structure haussier).
                    -> achat de 1 contrat a la cloture.
   - Sortie       : Trailing stop structurel. On clot la position si le Close
                    journalier passe sous le dernier Swing Low valide.
@@ -146,6 +148,13 @@ def run_backtest(df):
     entry_price = np.nan
     entry_date  = None
 
+    # Etat de structure de marche pour la condition d'entree :
+    #   structure == "bear" apres une cassure baissiere (close < swing low).
+    #   bb_breach == True si, DEPUIS le debut de la phase baissiere en cours,
+    #   le prix a cloture sous la bande de Bollinger inferieure.
+    structure = "bull"
+    bb_breach = False
+
     closes = df["Close"]
     lows   = df["Low"]
 
@@ -153,10 +162,9 @@ def run_backtest(df):
         date  = df.index[i]
         close = float(closes.iloc[i])
 
-        prev_low      = float(lows.iloc[i - 1])
-        prev_bb_lower = float(df["BB_lower"].iloc[i - 1])
-        swing_high    = df["last_swing_high"].iloc[i]
-        swing_low     = df["last_swing_low"].iloc[i]
+        bb_lower   = df["BB_lower"].iloc[i]
+        swing_high = df["last_swing_high"].iloc[i]
+        swing_low  = df["last_swing_low"].iloc[i]
 
         # ----- Gestion de la sortie (position ouverte) -----
         if in_position:
@@ -174,15 +182,37 @@ def run_backtest(df):
                 in_position = False
                 entry_price = np.nan
                 entry_date  = None
+                # La cassure baissiere du swing low fait basculer la structure
+                # en mode baissier et reinitialise le suivi de la bande.
+                structure = "bear"
+                bb_breach = False
+
+        # ----- Mise a jour de la structure / suivi de la bande basse -----
+        if not in_position:
+            # Cassure baissiere de structure : close sous le dernier swing low.
+            if not np.isnan(swing_low) and close < float(swing_low):
+                if structure != "bear":
+                    structure = "bear"
+                    bb_breach = False
+            # Pendant la phase baissiere, memorise un close sous la bande basse.
+            if structure == "bear" and not np.isnan(bb_lower) \
+                    and close <= float(bb_lower):
+                bb_breach = True
 
         # ----- Gestion de l'entree (pas de position) -----
         if not in_position:
-            cond_bb    = (not np.isnan(prev_bb_lower)) and (prev_low <= prev_bb_lower)
-            cond_bos   = (not np.isnan(swing_high)) and (close > float(swing_high))
-            if cond_bb and cond_bos:
+            # Entree long : on est en structure baissiere, le prix a cloture
+            # sous la bande inferieure depuis le debut de cette phase, et le
+            # close du jour casse a la hausse le dernier swing high (BoS).
+            cond_struct = (structure == "bear") and bb_breach
+            cond_bos    = (not np.isnan(swing_high)) and (close > float(swing_high))
+            if cond_struct and cond_bos:
                 in_position = True
                 entry_price = close
                 entry_date  = date
+                # Le BoS haussier fait basculer la structure en mode haussier.
+                structure = "bull"
+                bb_breach = False
 
         # ----- Equity mark-to-market -----
         if in_position:
