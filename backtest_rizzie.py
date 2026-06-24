@@ -59,6 +59,9 @@ INSTRUMENTS = {
             "name": "CAC 40 future (proxy ^FCHI)"},
     "IBEX": {"ticker": "^IBEX", "point": 10.0, "ccy": "EUR",
             "name": "IBEX 35 future (proxy ^IBEX)"},
+    # Bitcoin spot : 1 point = 1 USD pour 1 BTC detenu (~notionnel 1x).
+    "BTC": {"ticker": "BTC-USD", "point": 1.0, "ccy": "USD",
+            "name": "Bitcoin (BTC-USD spot, 1 BTC)"},
 }
 
 # Pour une fenetre de 5 jours, le pivot est la bougie centrale : k bougies
