@@ -55,6 +55,10 @@ INSTRUMENTS = {
             "name": "Dow Jones future (YM=F)"},
     "DAX": {"ticker": "^GDAXI", "point": 25.0, "ccy": "EUR",
             "name": "DAX future (proxy ^GDAXI)"},
+    "CAC": {"ticker": "^FCHI",  "point": 10.0, "ccy": "EUR",
+            "name": "CAC 40 future (proxy ^FCHI)"},
+    "IBEX": {"ticker": "^IBEX", "point": 10.0, "ccy": "EUR",
+            "name": "IBEX 35 future (proxy ^IBEX)"},
 }
 
 # Pour une fenetre de 5 jours, le pivot est la bougie centrale : k bougies
