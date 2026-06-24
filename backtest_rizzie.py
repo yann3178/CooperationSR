@@ -24,6 +24,7 @@ Gestion du lookahead bias :
   de k barres avant de les utiliser comme references de trading.
 """
 
+import sys
 import time
 import datetime as dt
 
@@ -49,23 +50,14 @@ CONTRACTS       = 1
 K = (SWING_WINDOW - 1) // 2
 
 
-def load_data():
-    """
-    Telecharge les donnees journalieres NQ=F via l'API chart de Yahoo Finance
-    (requests). On evite yfinance/curl_cffi qui echoue en TLS a travers le
-    proxy d'egress de l'environnement. Retry avec backoff exponentiel.
-    """
+def _yahoo_chart(params):
+    """Appel brut a l'API chart de Yahoo avec retry / backoff exponentiel."""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{TICKER}"
-    p1 = int(dt.datetime(2018, 1, 1).timestamp())
-    p2 = int(time.time()) if END is None else int(
-        dt.datetime.fromisoformat(END).timestamp())
-    params = {"period1": p1, "period2": p2, "interval": "1d"}
     headers = {
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
                        "Chrome/120.0 Safari/537.36")
     }
-
     last_err = None
     for attempt in range(5):
         try:
@@ -81,19 +73,47 @@ def load_data():
                     "Close":  q["close"],
                     "Volume": q["volume"],
                 }, index=pd.to_datetime(ts, unit="s"))
-                df.index = df.index.normalize()
-                df = df.dropna(subset=["Open", "High", "Low", "Close"])
-                # Filtre strict de la periode demandee.
-                df = df[df.index >= pd.Timestamp(START)]
-                return df
+                return df.dropna(subset=["Open", "High", "Low", "Close"])
             last_err = f"HTTP {r.status_code}"
         except Exception as e:  # noqa: BLE001
             last_err = str(e)
         wait = 2 ** (attempt + 1)
         print(f"  echec ({last_err}), nouvelle tentative dans {wait}s...")
         time.sleep(wait)
-
     raise RuntimeError(f"Impossible de telecharger {TICKER}: {last_err}")
+
+
+def load_data(interval="1d"):
+    """
+    Telecharge les donnees NQ=F via l'API chart de Yahoo Finance (requests :
+    on evite yfinance/curl_cffi qui echoue en TLS a travers le proxy d'egress).
+
+    Intervalles geres :
+      "1d"  : journalier, historique complet depuis 2018-01-01.
+      "1wk" : hebdomadaire, historique complet depuis 2018-01-01.
+      "4h"  : reconstruit par resampling du 1H (Yahoo n'a pas de 4H natif).
+              Note : l'intraday Yahoo est limite a ~730 jours d'historique,
+              donc le backtest 4H ne couvre que les ~2 dernieres annees.
+    """
+    if interval in ("1d", "1wk"):
+        p1 = int(dt.datetime(2018, 1, 1).timestamp())
+        p2 = int(time.time()) if END is None else int(
+            dt.datetime.fromisoformat(END).timestamp())
+        df = _yahoo_chart({"period1": p1, "period2": p2, "interval": interval})
+        if interval == "1d":
+            df.index = df.index.normalize()
+        df = df[df.index >= pd.Timestamp(START)]
+        return df
+
+    if interval == "4h":
+        # Yahoo ne fournit pas de 4H : on prend le 1H max dispo et on agrege.
+        hourly = _yahoo_chart({"range": "730d", "interval": "1h"})
+        agg = {"Open": "first", "High": "max", "Low": "min",
+               "Close": "last", "Volume": "sum"}
+        df = hourly.resample("4h").agg(agg).dropna(subset=["Open", "High", "Low", "Close"])
+        return df
+
+    raise ValueError(f"Intervalle non supporte : {interval}")
 
 
 def add_bollinger(df):
@@ -279,7 +299,7 @@ def run_backtest(df):
     return cash, pd.DataFrame(trades), eq
 
 
-def summarize(final_cash, trades, eq):
+def summarize(final_cash, trades, eq, label="Daily", period_txt=None):
     net_profit = final_cash - INITIAL_CAPITAL
     n_trades   = len(trades)
 
@@ -305,9 +325,9 @@ def summarize(final_cash, trades, eq):
         max_dd = dd_pct = 0.0
 
     print("=" * 60)
-    print("  BACKTEST 'LITTLE RIZZIE'  -  NQ=F (Daily)")
+    print(f"  BACKTEST 'LITTLE RIZZIE'  -  NQ=F ({label})")
     print("=" * 60)
-    print(f"  Periode               : {START} -> {'aujourd hui' if END is None else END}")
+    print(f"  Periode               : {period_txt or START + ' -> aujourd hui'}")
     print(f"  Capital initial       : {INITIAL_CAPITAL:,.2f} $")
     print(f"  Capital final         : {final_cash:,.2f} $")
     print(f"  Profit Net            : {net_profit:,.2f} $  ({net_profit/INITIAL_CAPITAL*100:.2f} %)")
@@ -322,24 +342,38 @@ def summarize(final_cash, trades, eq):
     if n_trades:
         print("\n  Detail des trades :")
         show = trades.copy()
-        show["entry_date"] = pd.to_datetime(show["entry_date"]).dt.date
-        show["exit_date"]  = pd.to_datetime(show["exit_date"]).dt.date
+        if label == "4H":
+            show["entry_date"] = pd.to_datetime(show["entry_date"])
+            show["exit_date"]  = pd.to_datetime(show["exit_date"])
+        else:
+            show["entry_date"] = pd.to_datetime(show["entry_date"]).dt.date
+            show["exit_date"]  = pd.to_datetime(show["exit_date"]).dt.date
         for col in ("entry_price", "exit_price", "points", "pnl"):
             show[col] = show[col].round(2)
         with pd.option_context("display.max_rows", None, "display.width", 120):
             print(show.to_string(index=False))
 
 
-def main():
-    print(f"Telechargement des donnees {TICKER} ...")
-    df = load_data()
-    print(f"  {len(df)} bougies journalieres recuperees "
-          f"({df.index[0].date()} -> {df.index[-1].date()}).")
+def run_for_interval(interval, label):
+    print(f"\nTelechargement des donnees {TICKER} ({label}) ...")
+    df = load_data(interval)
+    p0, p1 = df.index[0], df.index[-1]
+    print(f"  {len(df)} bougies recuperees ({p0} -> {p1}).")
     df = add_bollinger(df)
     df = add_adx(df, ADX_PERIOD)
     df = add_swings(df)
     final_cash, trades, eq = run_backtest(df)
-    summarize(final_cash, trades, eq)
+    period_txt = f"{p0} -> {p1}"
+    summarize(final_cash, trades, eq, label=label, period_txt=period_txt)
+
+
+def main():
+    intervals = {"1d": "Daily", "4h": "4H", "1wk": "Weekly"}
+    args = [a for a in sys.argv[1:] if a in intervals]
+    if not args:
+        args = ["1d"]               # defaut : journalier
+    for iv in args:
+        run_for_interval(iv, intervals[iv])
 
 
 if __name__ == "__main__":
