@@ -10,7 +10,8 @@ Strategie (Long uniquement) :
                    sous le dernier Swing Low valide), le prix a cloture sous la
                    bande de Bollinger inferieure (crossover en cloture) ET
                    aujourd'hui le Close casse a la hausse le dernier Swing High
-                   valide (Break of Structure haussier).
+                   valide (Break of Structure haussier) ET l'ADX(14) > 20
+                   (filtre de force de tendance).
                    -> achat de 1 contrat a la cloture.
   - Sortie       : Trailing stop structurel. On clot la position si le Close
                    journalier passe sous le dernier Swing Low valide.
@@ -37,6 +38,8 @@ END             = None              # None => jusqu'a aujourd'hui
 BB_PERIOD       = 20
 BB_STD          = 2.0
 SWING_WINDOW    = 5                 # fenetre glissante totale (pivot)
+ADX_PERIOD      = 14                # periode de l'ADX
+ADX_THRESHOLD   = 20.0             # filtre d'entree : ADX doit etre > ce seuil
 POINT_VALUE     = 20.0             # $ par point NQ
 INITIAL_CAPITAL = 100_000.0
 CONTRACTS       = 1
@@ -99,6 +102,40 @@ def add_bollinger(df):
     df["BB_mid"]   = mid
     df["BB_upper"] = mid + BB_STD * sd
     df["BB_lower"] = mid - BB_STD * sd
+    return df
+
+
+def add_adx(df, period=14):
+    """
+    Calcule l'ADX (Average Directional Index) selon la methode de Wilder.
+    L'ADX a la barre i n'utilise que des donnees jusqu'a i incluse : comme
+    l'entree se fait au close du jour i (avec le close de i), aucun lookahead.
+    """
+    high  = df["High"]
+    low   = df["Low"]
+    close = df["Close"]
+
+    up_move   = high.diff()
+    down_move = -low.diff()
+    plus_dm  = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    # Lissage de Wilder (equivaut a un EMA d'alpha = 1/period).
+    alpha = 1.0 / period
+    atr      = tr.ewm(alpha=alpha, adjust=False).mean()
+    plus_di  = 100.0 * pd.Series(plus_dm,  index=df.index).ewm(alpha=alpha, adjust=False).mean() / atr
+    minus_di = 100.0 * pd.Series(minus_dm, index=df.index).ewm(alpha=alpha, adjust=False).mean() / atr
+
+    dx  = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx = dx.ewm(alpha=alpha, adjust=False).mean()
+    df["ADX"] = adx
     return df
 
 
@@ -206,7 +243,9 @@ def run_backtest(df):
             # close du jour casse a la hausse le dernier swing high (BoS).
             cond_struct = (structure == "bear") and bb_breach
             cond_bos    = (not np.isnan(swing_high)) and (close > float(swing_high))
-            if cond_struct and cond_bos:
+            adx_val     = df["ADX"].iloc[i]
+            cond_adx    = (not np.isnan(adx_val)) and (adx_val > ADX_THRESHOLD)
+            if cond_struct and cond_bos and cond_adx:
                 in_position = True
                 entry_price = close
                 entry_date  = date
@@ -297,6 +336,7 @@ def main():
     print(f"  {len(df)} bougies journalieres recuperees "
           f"({df.index[0].date()} -> {df.index[-1].date()}).")
     df = add_bollinger(df)
+    df = add_adx(df, ADX_PERIOD)
     df = add_swings(df)
     final_cash, trades, eq = run_backtest(df)
     summarize(final_cash, trades, eq)
