@@ -33,7 +33,6 @@ import pandas as pd
 import requests
 
 # ----------------------------- Parametres ---------------------------------
-TICKER          = "NQ=F"
 START           = "2018-01-01"
 END             = None              # None => jusqu'a aujourd'hui
 BB_PERIOD       = 20
@@ -41,18 +40,31 @@ BB_STD          = 2.0
 SWING_WINDOW    = 5                 # fenetre glissante totale (pivot)
 ADX_PERIOD      = 14                # periode de l'ADX
 ADX_THRESHOLD   = 20.0             # filtre d'entree : ADX doit etre > ce seuil
-POINT_VALUE     = 20.0             # $ par point NQ
 INITIAL_CAPITAL = 100_000.0
 CONTRACTS       = 1
+
+# Instruments backtestes. point = valeur monetaire d'un point d'indice par
+# contrat. Le DAX n'a pas de future propre sur Yahoo : on utilise l'indice
+# ^GDAXI comme proxy du future FDAX (25 EUR / point).
+INSTRUMENTS = {
+    "NQ":  {"ticker": "NQ=F",   "point": 20.0, "ccy": "USD",
+            "name": "Nasdaq 100 future (NQ=F)"},
+    "ES":  {"ticker": "ES=F",   "point": 50.0, "ccy": "USD",
+            "name": "S&P 500 future (ES=F)"},
+    "YM":  {"ticker": "YM=F",   "point": 5.0,  "ccy": "USD",
+            "name": "Dow Jones future (YM=F)"},
+    "DAX": {"ticker": "^GDAXI", "point": 25.0, "ccy": "EUR",
+            "name": "DAX future (proxy ^GDAXI)"},
+}
 
 # Pour une fenetre de 5 jours, le pivot est la bougie centrale : k bougies
 # de chaque cote. k = (5 - 1) / 2 = 2  -> 2 barres de confirmation a droite.
 K = (SWING_WINDOW - 1) // 2
 
 
-def _yahoo_chart(params):
+def _yahoo_chart(params, ticker):
     """Appel brut a l'API chart de Yahoo avec retry / backoff exponentiel."""
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{TICKER}"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
     headers = {
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -80,13 +92,14 @@ def _yahoo_chart(params):
         wait = 2 ** (attempt + 1)
         print(f"  echec ({last_err}), nouvelle tentative dans {wait}s...")
         time.sleep(wait)
-    raise RuntimeError(f"Impossible de telecharger {TICKER}: {last_err}")
+    raise RuntimeError(f"Impossible de telecharger {ticker}: {last_err}")
 
 
-def load_data(interval="1d"):
+def load_data(ticker, interval="1d"):
     """
-    Telecharge les donnees NQ=F via l'API chart de Yahoo Finance (requests :
-    on evite yfinance/curl_cffi qui echoue en TLS a travers le proxy d'egress).
+    Telecharge les donnees d'un instrument via l'API chart de Yahoo Finance
+    (requests : on evite yfinance/curl_cffi qui echoue en TLS a travers le
+    proxy d'egress).
 
     Intervalles geres :
       "1d"  : journalier, historique complet depuis 2018-01-01.
@@ -99,7 +112,8 @@ def load_data(interval="1d"):
         p1 = int(dt.datetime(2018, 1, 1).timestamp())
         p2 = int(time.time()) if END is None else int(
             dt.datetime.fromisoformat(END).timestamp())
-        df = _yahoo_chart({"period1": p1, "period2": p2, "interval": interval})
+        df = _yahoo_chart(
+            {"period1": p1, "period2": p2, "interval": interval}, ticker)
         if interval == "1d":
             df.index = df.index.normalize()
         df = df[df.index >= pd.Timestamp(START)]
@@ -107,7 +121,7 @@ def load_data(interval="1d"):
 
     if interval == "4h":
         # Yahoo ne fournit pas de 4H : on prend le 1H max dispo et on agrege.
-        hourly = _yahoo_chart({"range": "730d", "interval": "1h"})
+        hourly = _yahoo_chart({"range": "730d", "interval": "1h"}, ticker)
         agg = {"Open": "first", "High": "max", "Low": "min",
                "Close": "last", "Volume": "sum"}
         df = hourly.resample("4h").agg(agg).dropna(subset=["Open", "High", "Low", "Close"])
@@ -196,7 +210,7 @@ def add_swings(df):
     return df
 
 
-def run_backtest(df):
+def run_backtest(df, point_value):
     equity_curve = []
     trades = []
 
@@ -226,7 +240,7 @@ def run_backtest(df):
         # ----- Gestion de la sortie (position ouverte) -----
         if in_position:
             if not np.isnan(swing_low) and close < float(swing_low):
-                pnl = (close - entry_price) * POINT_VALUE * CONTRACTS
+                pnl = (close - entry_price) * point_value * CONTRACTS
                 cash += pnl
                 trades.append({
                     "entry_date":  entry_date,
@@ -275,7 +289,7 @@ def run_backtest(df):
 
         # ----- Equity mark-to-market -----
         if in_position:
-            unrealized = (close - entry_price) * POINT_VALUE * CONTRACTS
+            unrealized = (close - entry_price) * point_value * CONTRACTS
             equity_curve.append((date, cash + unrealized))
         else:
             equity_curve.append((date, cash))
@@ -283,7 +297,7 @@ def run_backtest(df):
     # Cloture forcee de la derniere position au dernier close (mark-to-market)
     if in_position:
         last_close = float(closes.iloc[-1])
-        pnl = (last_close - entry_price) * POINT_VALUE * CONTRACTS
+        pnl = (last_close - entry_price) * point_value * CONTRACTS
         cash += pnl
         trades.append({
             "entry_date":  entry_date,
@@ -299,7 +313,8 @@ def run_backtest(df):
     return cash, pd.DataFrame(trades), eq
 
 
-def summarize(final_cash, trades, eq, label="Daily", period_txt=None):
+def summarize(final_cash, trades, eq, label="Daily", period_txt=None,
+              inst_name="Nasdaq 100 future (NQ=F)", ccy="USD"):
     net_profit = final_cash - INITIAL_CAPITAL
     n_trades   = len(trades)
 
@@ -324,20 +339,20 @@ def summarize(final_cash, trades, eq, label="Daily", period_txt=None):
     else:
         max_dd = dd_pct = 0.0
 
-    print("=" * 60)
-    print(f"  BACKTEST 'LITTLE RIZZIE'  -  NQ=F ({label})")
-    print("=" * 60)
+    print("=" * 64)
+    print(f"  BACKTEST 'LITTLE RIZZIE'  -  {inst_name} ({label})")
+    print("=" * 64)
     print(f"  Periode               : {period_txt or START + ' -> aujourd hui'}")
-    print(f"  Capital initial       : {INITIAL_CAPITAL:,.2f} $")
-    print(f"  Capital final         : {final_cash:,.2f} $")
-    print(f"  Profit Net            : {net_profit:,.2f} $  ({net_profit/INITIAL_CAPITAL*100:.2f} %)")
+    print(f"  Capital initial       : {INITIAL_CAPITAL:,.2f} {ccy}")
+    print(f"  Capital final         : {final_cash:,.2f} {ccy}")
+    print(f"  Profit Net            : {net_profit:,.2f} {ccy}  ({net_profit/INITIAL_CAPITAL*100:.2f} %)")
     print(f"  Nombre total de trades: {n_trades}")
     print(f"  Win Rate              : {win_rate:.2f} %")
-    print(f"  Gain moyen / trade gagnant : {avg_win:,.2f} $")
-    print(f"  Perte moyenne / trade perdant : {avg_loss:,.2f} $")
+    print(f"  Gain moyen / trade gagnant : {avg_win:,.2f} {ccy}")
+    print(f"  Perte moyenne / trade perdant : {avg_loss:,.2f} {ccy}")
     print(f"  Profit Factor         : {pf:.2f}")
-    print(f"  Drawdown Maximum      : {max_dd:,.2f} $  ({dd_pct:.2f} %)")
-    print("=" * 60)
+    print(f"  Drawdown Maximum      : {max_dd:,.2f} {ccy}  ({dd_pct:.2f} %)")
+    print("=" * 64)
 
     if n_trades:
         print("\n  Detail des trades :")
@@ -354,26 +369,33 @@ def summarize(final_cash, trades, eq, label="Daily", period_txt=None):
             print(show.to_string(index=False))
 
 
-def run_for_interval(interval, label):
-    print(f"\nTelechargement des donnees {TICKER} ({label}) ...")
-    df = load_data(interval)
+def run_one(inst_key, interval, label):
+    inst = INSTRUMENTS[inst_key]
+    print(f"\nTelechargement des donnees {inst['ticker']} "
+          f"[{inst['name']}] ({label}) ...")
+    df = load_data(inst["ticker"], interval)
     p0, p1 = df.index[0], df.index[-1]
     print(f"  {len(df)} bougies recuperees ({p0} -> {p1}).")
     df = add_bollinger(df)
     df = add_adx(df, ADX_PERIOD)
     df = add_swings(df)
-    final_cash, trades, eq = run_backtest(df)
+    final_cash, trades, eq = run_backtest(df, inst["point"])
     period_txt = f"{p0} -> {p1}"
-    summarize(final_cash, trades, eq, label=label, period_txt=period_txt)
+    summarize(final_cash, trades, eq, label=label, period_txt=period_txt,
+              inst_name=inst["name"], ccy=inst["ccy"])
 
 
 def main():
     intervals = {"1d": "Daily", "4h": "4H", "1wk": "Weekly"}
-    args = [a for a in sys.argv[1:] if a in intervals]
-    if not args:
-        args = ["1d"]               # defaut : journalier
-    for iv in args:
-        run_for_interval(iv, intervals[iv])
+    inst_args = [a for a in sys.argv[1:] if a.upper() in INSTRUMENTS]
+    iv_args   = [a for a in sys.argv[1:] if a in intervals]
+    if not inst_args:
+        inst_args = ["NQ"]          # defaut : Nasdaq
+    if not iv_args:
+        iv_args = ["1d"]            # defaut : journalier
+    for inst_key in inst_args:
+        for iv in iv_args:
+            run_one(inst_key.upper(), iv, intervals[iv])
 
 
 if __name__ == "__main__":
