@@ -52,7 +52,9 @@ CONTRACTS       = 1
 # du dernier macro bull run.
 USE_FIB_FILTER    = True
 FIB_TOLERANCE_PCT = 1.5            # largeur de la bande autour du niveau Fib (%)
-MACRO_LOOKBACK    = 252            # fenetre du macro bull run (en barres)
+MACRO_LOOKBACK    = 252            # fenetre du macro bull run (en barres, fallback)
+ADAPTIVE_MACRO    = True           # adapte la fenetre macro au timeframe (~1 an)
+MACRO_TARGET_DAYS = 365            # cible : ~1 an calendaire de contexte
 FIB_LEVELS        = (0.382, 0.5, 0.618)
 
 # Instruments backtestes. point = valeur monetaire d'un point d'indice par
@@ -466,6 +468,22 @@ def summarize(final_cash, trades, eq, label="Daily", period_txt=None,
             print(show.to_string(index=False))
 
 
+def macro_lookback_bars(df):
+    """
+    Nombre de barres correspondant a ~MACRO_TARGET_DAYS jours calendaires,
+    derive empiriquement de la densite de barres (gere daily/weekly/4H sans
+    hypothese codee en dur). Retombe sur MACRO_LOOKBACK si ADAPTIVE_MACRO=False.
+    """
+    if not ADAPTIVE_MACRO:
+        return MACRO_LOOKBACK
+    span_days = (df.index[-1] - df.index[0]).days
+    if span_days <= 0:
+        return min(MACRO_LOOKBACK, len(df))
+    bars_per_cal_day = len(df) / span_days
+    n = int(round(bars_per_cal_day * MACRO_TARGET_DAYS))
+    return max(20, min(n, len(df) - 1))
+
+
 def prepare(inst_key, interval):
     """Charge les donnees et calcule tous les indicateurs une seule fois."""
     inst = INSTRUMENTS[inst_key]
@@ -473,11 +491,13 @@ def prepare(inst_key, interval):
           f"[{inst['name']}] ({interval}) ...")
     df = load_data(inst["ticker"], interval)
     p0, p1 = df.index[0], df.index[-1]
-    print(f"  {len(df)} bougies recuperees ({p0} -> {p1}).")
+    lb = macro_lookback_bars(df)
+    print(f"  {len(df)} bougies recuperees ({p0} -> {p1}). "
+          f"Fenetre macro Fib = {lb} barres (~{MACRO_TARGET_DAYS}j).")
     df = add_bollinger(df)
     df = add_adx(df, ADX_PERIOD)
     df = add_swings(df)
-    df = add_fib(df)
+    df = add_fib(df, lookback=lb)
     return df, inst, (p0, p1)
 
 
