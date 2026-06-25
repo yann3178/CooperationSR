@@ -11,7 +11,10 @@ Strategie (Long uniquement) :
                    bande de Bollinger inferieure (crossover en cloture) ET
                    aujourd'hui le Close casse a la hausse le dernier Swing High
                    valide (Break of Structure haussier) ET l'ADX(14) > 20
-                   (filtre de force de tendance).
+                   (filtre de force de tendance) ET (optionnel) la Confluence
+                   Fibonacci : la cible baissiere Rizzie (SwingLow - (SwingHigh
+                   - SwingLow)) tombe pres d'un niveau de Fib (38.2/50/61.8 %)
+                   du dernier macro bull run, a FIB_TOLERANCE_PCT % pres.
                    -> achat de 1 contrat a la cloture.
   - Sortie       : Trailing stop structurel. On clot la position si le Close
                    journalier passe sous le dernier Swing Low valide.
@@ -42,6 +45,15 @@ ADX_PERIOD      = 14                # periode de l'ADX
 ADX_THRESHOLD   = 20.0             # filtre d'entree : ADX doit etre > ce seuil
 INITIAL_CAPITAL = 100_000.0
 CONTRACTS       = 1
+
+# --- Filtre de Confluence Fibonacci (methode Marci Silfrain) ---------------
+# Active une condition d'entree supplementaire : la cible baissiere theorique
+# du motif Rizzie doit tomber en confluence avec un niveau de Fibonacci majeur
+# du dernier macro bull run.
+USE_FIB_FILTER    = True
+FIB_TOLERANCE_PCT = 1.5            # largeur de la bande autour du niveau Fib (%)
+MACRO_LOOKBACK    = 252            # fenetre du macro bull run (en barres)
+FIB_LEVELS        = (0.382, 0.5, 0.618)
 
 # Instruments backtestes. point = valeur monetaire d'un point d'indice par
 # contrat. Le DAX n'a pas de future propre sur Yahoo : on utilise l'indice
@@ -217,7 +229,51 @@ def add_swings(df):
     return df
 
 
-def run_backtest(df, point_value):
+def add_fib(df, lookback=MACRO_LOOKBACK):
+    """
+    Filtre de Confluence Fibonacci (Marci Silfrain).
+
+    Pour chaque barre i, on regarde la fenetre macro [i-lookback+1, i] (passe
+    uniquement -> pas de lookahead) :
+      - Macro_Low / Macro_High = plus bas / plus haut absolus de la fenetre.
+      - Dynamique haussiere validee si le plus haut survient APRES le plus bas
+        (impulsion macro a la hausse).
+      - Niveaux de retracement de Fib (38.2 / 50 / 61.8 %) de cette impulsion :
+            niveau = Macro_High - r * (Macro_High - Macro_Low).
+    Les niveaux ne dependent pas de la tolerance : ils sont calcules une fois,
+    la confluence avec la cible Rizzie est testee plus tard dans le backtest.
+    """
+    high = df["High"].to_numpy()
+    low  = df["Low"].to_numpy()
+    n    = len(df)
+
+    macro_bull = np.zeros(n, dtype=bool)
+    fib = {r: np.full(n, np.nan) for r in FIB_LEVELS}
+
+    for i in range(lookback - 1, n):
+        w_lo = low[i - lookback + 1:i + 1]
+        w_hi = high[i - lookback + 1:i + 1]
+        lo, hi = w_lo.min(), w_hi.max()
+        pos_lo = int(w_lo.argmin())
+        pos_hi = int(w_hi.argmax())
+        # Impulsion haussiere : creux d'abord, sommet ensuite, et amplitude > 0.
+        if pos_hi > pos_lo and hi > lo:
+            macro_bull[i] = True
+            rng = hi - lo
+            for r in FIB_LEVELS:
+                fib[r][i] = hi - r * rng
+
+    df["macro_bull"] = macro_bull
+    for r in FIB_LEVELS:
+        df[f"fib_{int(r*1000)}"] = fib[r]
+    return df
+
+
+def run_backtest(df, point_value, use_fib=None, fib_tol=None):
+    use_fib = USE_FIB_FILTER if use_fib is None else use_fib
+    fib_tol = FIB_TOLERANCE_PCT if fib_tol is None else fib_tol
+    fib_cols = [f"fib_{int(r*1000)}" for r in FIB_LEVELS] if use_fib else []
+
     equity_curve = []
     trades = []
 
@@ -286,7 +342,26 @@ def run_backtest(df, point_value):
             cond_bos    = (not np.isnan(swing_high)) and (close > float(swing_high))
             adx_val     = df["ADX"].iloc[i]
             cond_adx    = (not np.isnan(adx_val)) and (adx_val > ADX_THRESHOLD)
-            if cond_struct and cond_bos and cond_adx:
+
+            # ----- Filtre de Confluence Fibonacci (optionnel) -----
+            cond_fib = True
+            if use_fib:
+                cond_fib = False
+                if df["macro_bull"].iloc[i] and not np.isnan(swing_high) \
+                        and not np.isnan(swing_low):
+                    # Cible Rizzie : D = SwingHigh - SwingLow, reportee sous
+                    # le SwingLow -> target = SwingLow - D.
+                    dist   = float(swing_high) - float(swing_low)
+                    target = float(swing_low) - dist
+                    if target > 0:
+                        for col in fib_cols:
+                            lvl = df[col].iloc[i]
+                            if not np.isnan(lvl) and lvl > 0 and \
+                                    abs(target - lvl) / lvl <= fib_tol / 100.0:
+                                cond_fib = True
+                                break
+
+            if cond_struct and cond_bos and cond_adx and cond_fib:
                 in_position = True
                 entry_price = close
                 entry_date  = date
@@ -320,8 +395,8 @@ def run_backtest(df, point_value):
     return cash, pd.DataFrame(trades), eq
 
 
-def summarize(final_cash, trades, eq, label="Daily", period_txt=None,
-              inst_name="Nasdaq 100 future (NQ=F)", ccy="USD"):
+def compute_stats(final_cash, trades, eq):
+    """Renvoie un dict de metriques de performance (reutilisable)."""
     net_profit = final_cash - INITIAL_CAPITAL
     n_trades   = len(trades)
 
@@ -337,7 +412,6 @@ def summarize(final_cash, trades, eq, label="Daily", period_txt=None,
     else:
         win_rate = avg_win = avg_loss = pf = 0.0
 
-    # Max drawdown sur la courbe d'equity
     if len(eq):
         running_max = eq["equity"].cummax()
         drawdown    = eq["equity"] - running_max
@@ -345,6 +419,21 @@ def summarize(final_cash, trades, eq, label="Daily", period_txt=None,
         dd_pct      = (drawdown / running_max).min() * 100.0
     else:
         max_dd = dd_pct = 0.0
+
+    return {
+        "final_cash": final_cash, "net_profit": net_profit,
+        "n_trades": n_trades, "win_rate": win_rate, "pf": pf,
+        "avg_win": avg_win, "avg_loss": avg_loss,
+        "max_dd": max_dd, "dd_pct": dd_pct,
+    }
+
+
+def summarize(final_cash, trades, eq, label="Daily", period_txt=None,
+              inst_name="Nasdaq 100 future (NQ=F)", ccy="USD"):
+    s = compute_stats(final_cash, trades, eq)
+    net_profit = s["net_profit"]; n_trades = s["n_trades"]
+    win_rate = s["win_rate"]; avg_win = s["avg_win"]; avg_loss = s["avg_loss"]
+    pf = s["pf"]; max_dd = s["max_dd"]; dd_pct = s["dd_pct"]
 
     print("=" * 64)
     print(f"  BACKTEST 'LITTLE RIZZIE'  -  {inst_name} ({label})")
@@ -376,24 +465,69 @@ def summarize(final_cash, trades, eq, label="Daily", period_txt=None,
             print(show.to_string(index=False))
 
 
-def run_one(inst_key, interval, label):
+def prepare(inst_key, interval):
+    """Charge les donnees et calcule tous les indicateurs une seule fois."""
     inst = INSTRUMENTS[inst_key]
     print(f"\nTelechargement des donnees {inst['ticker']} "
-          f"[{inst['name']}] ({label}) ...")
+          f"[{inst['name']}] ({interval}) ...")
     df = load_data(inst["ticker"], interval)
     p0, p1 = df.index[0], df.index[-1]
     print(f"  {len(df)} bougies recuperees ({p0} -> {p1}).")
     df = add_bollinger(df)
     df = add_adx(df, ADX_PERIOD)
     df = add_swings(df)
+    df = add_fib(df)
+    return df, inst, (p0, p1)
+
+
+def run_one(inst_key, interval, label):
+    df, inst, (p0, p1) = prepare(inst_key, interval)
     final_cash, trades, eq = run_backtest(df, inst["point"])
-    period_txt = f"{p0} -> {p1}"
-    summarize(final_cash, trades, eq, label=label, period_txt=period_txt,
+    fib_txt = (f"  (Filtre Fib : ON, tolerance {FIB_TOLERANCE_PCT}%)"
+               if USE_FIB_FILTER else "  (Filtre Fib : OFF)")
+    print(fib_txt)
+    summarize(final_cash, trades, eq, label=label, period_txt=f"{p0} -> {p1}",
               inst_name=inst["name"], ccy=inst["ccy"])
+
+
+def optimize_fib(inst_key, interval, label):
+    """Boucle d'optimisation de FIB_TOLERANCE_PCT (0.5 -> 5.0 %, pas 0.5)."""
+    df, inst, (p0, p1) = prepare(inst_key, interval)
+    ccy = inst["ccy"]
+
+    # Reference : filtre desactive (baseline).
+    fc0, tr0, eq0 = run_backtest(df, inst["point"], use_fib=False)
+    base = compute_stats(fc0, tr0, eq0)
+
+    print("\n" + "=" * 78)
+    print(f"  OPTIMISATION FILTRE FIBONACCI - {inst['name']} ({label})")
+    print(f"  Periode : {p0} -> {p1}")
+    print("=" * 78)
+    print(f"  {'Tol %':>6} | {'Trades':>6} | {'WinRate':>7} | "
+          f"{'PF':>6} | {'Profit Net':>14} | {'DD %':>7}")
+    print("  " + "-" * 64)
+    print(f"  {'OFF':>6} | {base['n_trades']:>6} | {base['win_rate']:>6.1f}% | "
+          f"{base['pf']:>6.2f} | {base['net_profit']:>12,.0f} {ccy[:3]} | "
+          f"{base['dd_pct']:>6.1f}%")
+
+    rows = []
+    tol = 0.5
+    while tol <= 5.0 + 1e-9:
+        fc, tr, eq = run_backtest(df, inst["point"], use_fib=True, fib_tol=tol)
+        s = compute_stats(fc, tr, eq)
+        s["tol"] = tol
+        rows.append(s)
+        print(f"  {tol:>6.1f} | {s['n_trades']:>6} | {s['win_rate']:>6.1f}% | "
+              f"{s['pf']:>6.2f} | {s['net_profit']:>12,.0f} {ccy[:3]} | "
+              f"{s['dd_pct']:>6.1f}%")
+        tol += 0.5
+    print("=" * 78)
+    return base, rows
 
 
 def main():
     intervals = {"1d": "Daily", "4h": "4H", "1wk": "Weekly"}
+    do_opt    = any(a in ("opt", "--opt", "optimize") for a in sys.argv[1:])
     inst_args = [a for a in sys.argv[1:] if a.upper() in INSTRUMENTS]
     iv_args   = [a for a in sys.argv[1:] if a in intervals]
     if not inst_args:
@@ -402,7 +536,10 @@ def main():
         iv_args = ["1d"]            # defaut : journalier
     for inst_key in inst_args:
         for iv in iv_args:
-            run_one(inst_key.upper(), iv, intervals[iv])
+            if do_opt:
+                optimize_fib(inst_key.upper(), iv, intervals[iv])
+            else:
+                run_one(inst_key.upper(), iv, intervals[iv])
 
 
 if __name__ == "__main__":
