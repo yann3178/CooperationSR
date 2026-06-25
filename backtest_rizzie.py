@@ -526,19 +526,23 @@ def optimize_fib(inst_key, interval, label):
     return base, rows
 
 
-def optimize_swing(inst_key, interval, label, windows=range(3, 22, 2)):
+def optimize_swing(inst_key, interval, label, windows=range(3, 22, 2),
+                   use_fib=False, fib_tol=None):
     """
     Optimisation de la fenetre de detection des swings (SWING_WINDOW).
-    Filtre Fibonacci DESACTIVE pour isoler l'effet de la fenetre. Les autres
-    indicateurs (Bollinger, ADX) sont independants de la fenetre et calcules
-    une seule fois ; seuls les swings sont recalcules a chaque iteration.
+    Les indicateurs independants de la fenetre (Bollinger, ADX, Fib) sont
+    calcules une seule fois ; seuls les swings sont recalcules a chaque
+    iteration. Le filtre Fibonacci peut etre active (use_fib=True) ; noter que
+    la cible Rizzie depend des swings, donc le filtre interagit avec la fenetre.
     """
+    fib_tol = FIB_TOLERANCE_PCT if fib_tol is None else fib_tol
     df, inst, (p0, p1) = prepare(inst_key, interval)
     ccy = inst["ccy"]
 
+    fib_state = f"ON (tol {fib_tol}%)" if use_fib else "OFF"
     print("\n" + "=" * 78)
     print(f"  OPTIMISATION FENETRE DE SWING - {inst['name']} ({label})")
-    print(f"  Periode : {p0} -> {p1}   |   Filtre Fibonacci : OFF")
+    print(f"  Periode : {p0} -> {p1}   |   Filtre Fibonacci : {fib_state}")
     print("=" * 78)
     print(f"  {'Window':>6} | {'k(conf)':>7} | {'Trades':>6} | {'WinRate':>7} | "
           f"{'PF':>6} | {'Profit Net':>14} | {'DD %':>7}")
@@ -547,7 +551,8 @@ def optimize_swing(inst_key, interval, label, windows=range(3, 22, 2)):
     rows = []
     for w in windows:
         add_swings(df, window=w)            # recalcule last_swing_high/low
-        fc, tr, eq = run_backtest(df, inst["point"], use_fib=False)
+        fc, tr, eq = run_backtest(df, inst["point"],
+                                  use_fib=use_fib, fib_tol=fib_tol)
         s = compute_stats(fc, tr, eq)
         s["window"] = w
         rows.append(s)
@@ -562,6 +567,7 @@ def main():
     intervals = {"1d": "Daily", "4h": "4H", "1wk": "Weekly"}
     do_opt    = any(a in ("opt", "--opt", "optimize") for a in sys.argv[1:])
     do_swing  = any(a in ("swing", "--swing", "optswing") for a in sys.argv[1:])
+    swing_fib = any(a in ("fib", "--fib", "withfib") for a in sys.argv[1:])
     inst_args = [a for a in sys.argv[1:] if a.upper() in INSTRUMENTS]
     iv_args   = [a for a in sys.argv[1:] if a in intervals]
     if not inst_args:
@@ -571,7 +577,8 @@ def main():
     for inst_key in inst_args:
         for iv in iv_args:
             if do_swing:
-                optimize_swing(inst_key.upper(), iv, intervals[iv])
+                optimize_swing(inst_key.upper(), iv, intervals[iv],
+                               use_fib=swing_fib)
             elif do_opt:
                 optimize_fib(inst_key.upper(), iv, intervals[iv])
             else:
