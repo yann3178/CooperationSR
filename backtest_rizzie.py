@@ -52,9 +52,10 @@ CONTRACTS       = 1
 # du dernier macro bull run.
 USE_FIB_FILTER    = True
 FIB_TOLERANCE_PCT = 1.5            # largeur de la bande autour du niveau Fib (%)
-MACRO_LOOKBACK    = 252            # fenetre du macro bull run (en barres, fallback)
-ADAPTIVE_MACRO    = True           # adapte la fenetre macro au timeframe (~1 an)
-MACRO_TARGET_DAYS = 365            # cible : ~1 an calendaire de contexte
+# Fenetre du macro bull run du filtre Fib, exprimee en NOMBRE DE BARRES (et non
+# en duree calendaire) : auto-similaire d'un timeframe a l'autre. ~200 barres
+# correspond a ~1 an en daily, ~6 semaines en 4H, ~2 jours en 5 min, etc.
+MACRO_LOOKBACK    = 200
 FIB_LEVELS        = (0.382, 0.5, 0.618)
 
 # Instruments backtestes. point = valeur monetaire d'un point d'indice par
@@ -473,23 +474,16 @@ def summarize(final_cash, trades, eq, label="Daily", period_txt=None,
             print(show.to_string(index=False))
 
 
-def macro_lookback_bars(df):
+def macro_lookback_bars(df, lookback=None):
     """
-    Nombre de barres correspondant a ~MACRO_TARGET_DAYS jours calendaires,
-    derive empiriquement de la densite de barres (gere daily/weekly/4H sans
-    hypothese codee en dur). Retombe sur MACRO_LOOKBACK si ADAPTIVE_MACRO=False.
+    Fenetre du macro bull run, en NOMBRE DE BARRES (auto-similaire au timeframe).
+    Bornee a la taille disponible.
     """
-    if not ADAPTIVE_MACRO:
-        return MACRO_LOOKBACK
-    span_days = (df.index[-1] - df.index[0]).days
-    if span_days <= 0:
-        return min(MACRO_LOOKBACK, len(df))
-    bars_per_cal_day = len(df) / span_days
-    n = int(round(bars_per_cal_day * MACRO_TARGET_DAYS))
-    return max(20, min(n, len(df) - 1))
+    lb = MACRO_LOOKBACK if lookback is None else lookback
+    return max(20, min(lb, len(df) - 1))
 
 
-def prepare(inst_key, interval, swing=None):
+def prepare(inst_key, interval, swing=None, macro=None):
     """Charge les donnees et calcule tous les indicateurs une seule fois."""
     swing = SWING_WINDOW if swing is None else swing
     inst = INSTRUMENTS[inst_key]
@@ -497,9 +491,9 @@ def prepare(inst_key, interval, swing=None):
           f"[{inst['name']}] ({interval}) ...")
     df = load_data(inst["ticker"], interval)
     p0, p1 = df.index[0], df.index[-1]
-    lb = macro_lookback_bars(df)
+    lb = macro_lookback_bars(df, macro)
     print(f"  {len(df)} bougies recuperees ({p0} -> {p1}). "
-          f"Fenetre macro Fib = {lb} barres (~{MACRO_TARGET_DAYS}j), swing={swing}.")
+          f"Macro Fib = {lb} barres, swing = {swing}.")
     df = add_bollinger(df)
     df = add_adx(df, ADX_PERIOD)
     df = add_swings(df, window=swing)
@@ -589,6 +583,45 @@ def optimize_swing(inst_key, interval, label, windows=range(3, 22, 2),
     return rows
 
 
+def optimize_macro(inst_key, interval, label,
+                   lookbacks=(60, 80, 100, 120, 150, 180, 200, 250, 300, 350, 400),
+                   fib_tol=None):
+    """
+    Optimisation de la fenetre macro du filtre Fib (en NOMBRE DE BARRES).
+    Bollinger/ADX/swings sont calcules une fois ; seule la couche Fib est
+    recalculee a chaque lookback. Filtre Fib actif (sinon le parametre n'a
+    aucun effet). On cherche un plateau de robustesse.
+    """
+    fib_tol = (INSTRUMENTS[inst_key]["fib_tol"] if fib_tol is None
+               else fib_tol)
+    df, inst, (p0, p1) = prepare(inst_key, interval,
+                                 swing=SWING_BY_TF.get(interval, SWING_WINDOW))
+    ccy = inst["ccy"]
+
+    print("\n" + "=" * 78)
+    print(f"  OPTIMISATION MACRO LOOKBACK (barres) - {inst['name']} ({label})")
+    print(f"  Periode : {p0} -> {p1}   |   Fib tol = {fib_tol}%")
+    print("=" * 78)
+    print(f"  {'Macro':>6} | {'Trades':>6} | {'WinRate':>7} | "
+          f"{'PF':>6} | {'Profit Net':>14} | {'DD %':>7}")
+    print("  " + "-" * 62)
+
+    rows = []
+    for lb in lookbacks:
+        if lb >= len(df) - 1:
+            continue
+        add_fib(df, lookback=lb)            # recalcule uniquement la couche Fib
+        fc, tr, eq = run_backtest(df, inst["point"], use_fib=True, fib_tol=fib_tol)
+        s = compute_stats(fc, tr, eq)
+        s["macro"] = lb
+        rows.append(s)
+        print(f"  {lb:>6} | {s['n_trades']:>6} | {s['win_rate']:>6.1f}% | "
+              f"{s['pf']:>6.2f} | {s['net_profit']:>12,.0f} {ccy[:3]} | "
+              f"{s['dd_pct']:>6.1f}%")
+    print("=" * 78)
+    return rows
+
+
 def run_matrix(assets, intervals_map):
     """
     Run consolide final : chaque actif x chaque timeframe, avec les parametres
@@ -632,6 +665,7 @@ def main():
     do_matrix = any(a in ("matrix", "--matrix", "all") for a in sys.argv[1:])
     do_opt    = any(a in ("opt", "--opt", "optimize") for a in sys.argv[1:])
     do_swing  = any(a in ("swing", "--swing", "optswing") for a in sys.argv[1:])
+    do_macro  = any(a in ("macro", "--macro", "optmacro") for a in sys.argv[1:])
     swing_fib = any(a in ("fib", "--fib", "withfib") for a in sys.argv[1:])
     inst_args = [a for a in sys.argv[1:] if a.upper() in INSTRUMENTS]
     iv_args   = [a for a in sys.argv[1:] if a in intervals]
@@ -648,7 +682,9 @@ def main():
         iv_args = ["1d"]            # defaut : journalier
     for inst_key in inst_args:
         for iv in iv_args:
-            if do_swing:
+            if do_macro:
+                optimize_macro(inst_key.upper(), iv, intervals[iv])
+            elif do_swing:
                 optimize_swing(inst_key.upper(), iv, intervals[iv],
                                use_fib=swing_fib)
             elif do_opt:
