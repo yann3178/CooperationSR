@@ -192,12 +192,13 @@ def add_adx(df, period=14):
     return df
 
 
-def add_swings(df):
+def add_swings(df, window=SWING_WINDOW):
     """
-    Detecte les pivots (swing high/low) sur une fenetre centree de 5 barres
-    puis propage le DERNIER niveau valide, decale de K barres pour eviter
-    tout lookahead bias (un pivot a la barre i est connu a la barre i+K).
+    Detecte les pivots (swing high/low) sur une fenetre centree de `window`
+    barres puis propage le DERNIER niveau valide, decale de k barres pour
+    eviter tout lookahead bias (un pivot a la barre i est connu a la barre i+k).
     """
+    k = (window - 1) // 2
     high = df["High"].to_numpy()
     low  = df["Low"].to_numpy()
     n    = len(df)
@@ -206,10 +207,10 @@ def add_swings(df):
     is_swing_low  = np.zeros(n, dtype=bool)
 
     # La bougie centrale i est un swing high si son High est strictement le
-    # plus haut de la fenetre [i-K, i+K] (idem, plus bas, pour swing low).
-    for i in range(K, n - K):
-        win_h = high[i - K:i + K + 1]
-        win_l = low[i - K:i + K + 1]
+    # plus haut de la fenetre [i-k, i+k] (idem, plus bas, pour swing low).
+    for i in range(k, n - k):
+        win_h = high[i - k:i + k + 1]
+        win_l = low[i - k:i + k + 1]
         if high[i] == win_h.max() and (win_h == high[i]).sum() == 1:
             is_swing_high[i] = True
         if low[i] == win_l.min() and (win_l == low[i]).sum() == 1:
@@ -222,10 +223,10 @@ def add_swings(df):
     sh = pd.Series(swing_high_level, index=df.index)
     sl = pd.Series(swing_low_level,  index=df.index)
 
-    # Decalage de K barres : le niveau n'est connu qu'apres confirmation,
+    # Decalage de k barres : le niveau n'est connu qu'apres confirmation,
     # puis on propage (ffill) le dernier swing valide connu.
-    df["last_swing_high"] = sh.shift(K).ffill()
-    df["last_swing_low"]  = sl.shift(K).ffill()
+    df["last_swing_high"] = sh.shift(k).ffill()
+    df["last_swing_low"]  = sl.shift(k).ffill()
     return df
 
 
@@ -525,9 +526,42 @@ def optimize_fib(inst_key, interval, label):
     return base, rows
 
 
+def optimize_swing(inst_key, interval, label, windows=range(3, 22, 2)):
+    """
+    Optimisation de la fenetre de detection des swings (SWING_WINDOW).
+    Filtre Fibonacci DESACTIVE pour isoler l'effet de la fenetre. Les autres
+    indicateurs (Bollinger, ADX) sont independants de la fenetre et calcules
+    une seule fois ; seuls les swings sont recalcules a chaque iteration.
+    """
+    df, inst, (p0, p1) = prepare(inst_key, interval)
+    ccy = inst["ccy"]
+
+    print("\n" + "=" * 78)
+    print(f"  OPTIMISATION FENETRE DE SWING - {inst['name']} ({label})")
+    print(f"  Periode : {p0} -> {p1}   |   Filtre Fibonacci : OFF")
+    print("=" * 78)
+    print(f"  {'Window':>6} | {'k(conf)':>7} | {'Trades':>6} | {'WinRate':>7} | "
+          f"{'PF':>6} | {'Profit Net':>14} | {'DD %':>7}")
+    print("  " + "-" * 70)
+
+    rows = []
+    for w in windows:
+        add_swings(df, window=w)            # recalcule last_swing_high/low
+        fc, tr, eq = run_backtest(df, inst["point"], use_fib=False)
+        s = compute_stats(fc, tr, eq)
+        s["window"] = w
+        rows.append(s)
+        print(f"  {w:>6} | {(w-1)//2:>7} | {s['n_trades']:>6} | "
+              f"{s['win_rate']:>6.1f}% | {s['pf']:>6.2f} | "
+              f"{s['net_profit']:>12,.0f} {ccy[:3]} | {s['dd_pct']:>6.1f}%")
+    print("=" * 78)
+    return rows
+
+
 def main():
     intervals = {"1d": "Daily", "4h": "4H", "1wk": "Weekly"}
     do_opt    = any(a in ("opt", "--opt", "optimize") for a in sys.argv[1:])
+    do_swing  = any(a in ("swing", "--swing", "optswing") for a in sys.argv[1:])
     inst_args = [a for a in sys.argv[1:] if a.upper() in INSTRUMENTS]
     iv_args   = [a for a in sys.argv[1:] if a in intervals]
     if not inst_args:
@@ -536,7 +570,9 @@ def main():
         iv_args = ["1d"]            # defaut : journalier
     for inst_key in inst_args:
         for iv in iv_args:
-            if do_opt:
+            if do_swing:
+                optimize_swing(inst_key.upper(), iv, intervals[iv])
+            elif do_opt:
                 optimize_fib(inst_key.upper(), iv, intervals[iv])
             else:
                 run_one(inst_key.upper(), iv, intervals[iv])
