@@ -60,23 +60,28 @@ FIB_LEVELS        = (0.382, 0.5, 0.618)
 # Instruments backtestes. point = valeur monetaire d'un point d'indice par
 # contrat. Le DAX n'a pas de future propre sur Yahoo : on utilise l'indice
 # ^GDAXI comme proxy du future FDAX (25 EUR / point).
+# fib_tol = tolerance Fibonacci optimisee par actif (plateau robuste, daily).
 INSTRUMENTS = {
-    "NQ":  {"ticker": "NQ=F",   "point": 20.0, "ccy": "USD",
+    "NQ":  {"ticker": "NQ=F",   "point": 20.0, "ccy": "USD", "fib_tol": 3.0,
             "name": "Nasdaq 100 future (NQ=F)"},
-    "ES":  {"ticker": "ES=F",   "point": 50.0, "ccy": "USD",
+    "ES":  {"ticker": "ES=F",   "point": 50.0, "ccy": "USD", "fib_tol": 3.0,
             "name": "S&P 500 future (ES=F)"},
-    "YM":  {"ticker": "YM=F",   "point": 5.0,  "ccy": "USD",
+    "YM":  {"ticker": "YM=F",   "point": 5.0,  "ccy": "USD", "fib_tol": 3.0,
             "name": "Dow Jones future (YM=F)"},
-    "DAX": {"ticker": "^GDAXI", "point": 25.0, "ccy": "EUR",
+    "DAX": {"ticker": "^GDAXI", "point": 25.0, "ccy": "EUR", "fib_tol": 1.5,
             "name": "DAX future (proxy ^GDAXI)"},
-    "CAC": {"ticker": "^FCHI",  "point": 10.0, "ccy": "EUR",
+    "CAC": {"ticker": "^FCHI",  "point": 10.0, "ccy": "EUR", "fib_tol": 1.0,
             "name": "CAC 40 future (proxy ^FCHI)"},
-    "IBEX": {"ticker": "^IBEX", "point": 10.0, "ccy": "EUR",
+    "IBEX": {"ticker": "^IBEX", "point": 10.0, "ccy": "EUR", "fib_tol": 3.0,
             "name": "IBEX 35 future (proxy ^IBEX)"},
     # Bitcoin spot : 1 point = 1 USD pour 1 BTC detenu (~notionnel 1x).
-    "BTC": {"ticker": "BTC-USD", "point": 1.0, "ccy": "USD",
+    # fib_tol non optimise (pas assez d'echantillon) -> valeur par defaut.
+    "BTC": {"ticker": "BTC-USD", "point": 1.0, "ccy": "USD", "fib_tol": 3.0,
             "name": "Bitcoin (BTC-USD spot, 1 BTC)"},
 }
+
+# Fenetre de detection des swings par timeframe (plateau robuste identifie).
+SWING_BY_TF = {"1d": 5, "1wk": 5, "4h": 9}
 
 # Pour une fenetre de 5 jours, le pivot est la bougie centrale : k bougies
 # de chaque cote. k = (5 - 1) / 2 = 2  -> 2 barres de confirmation a droite.
@@ -484,8 +489,9 @@ def macro_lookback_bars(df):
     return max(20, min(n, len(df) - 1))
 
 
-def prepare(inst_key, interval):
+def prepare(inst_key, interval, swing=None):
     """Charge les donnees et calcule tous les indicateurs une seule fois."""
+    swing = SWING_WINDOW if swing is None else swing
     inst = INSTRUMENTS[inst_key]
     print(f"\nTelechargement des donnees {inst['ticker']} "
           f"[{inst['name']}] ({interval}) ...")
@@ -493,10 +499,10 @@ def prepare(inst_key, interval):
     p0, p1 = df.index[0], df.index[-1]
     lb = macro_lookback_bars(df)
     print(f"  {len(df)} bougies recuperees ({p0} -> {p1}). "
-          f"Fenetre macro Fib = {lb} barres (~{MACRO_TARGET_DAYS}j).")
+          f"Fenetre macro Fib = {lb} barres (~{MACRO_TARGET_DAYS}j), swing={swing}.")
     df = add_bollinger(df)
     df = add_adx(df, ADX_PERIOD)
-    df = add_swings(df)
+    df = add_swings(df, window=swing)
     df = add_fib(df, lookback=lb)
     return df, inst, (p0, p1)
 
@@ -583,13 +589,59 @@ def optimize_swing(inst_key, interval, label, windows=range(3, 22, 2),
     return rows
 
 
+def run_matrix(assets, intervals_map):
+    """
+    Run consolide final : chaque actif x chaque timeframe, avec les parametres
+    agrees : filtre Fib ON, tolerance par actif (inst['fib_tol']), swing window
+    par timeframe (SWING_BY_TF), macro lookback adaptatif. Imprime une matrice
+    recapitulative.
+    """
+    results = []
+    for a in assets:
+        for iv, label in intervals_map.items():
+            inst = INSTRUMENTS[a]
+            swing = SWING_BY_TF.get(iv, SWING_WINDOW)
+            tol = inst["fib_tol"]
+            df, _, (p0, p1) = prepare(a, iv, swing=swing)
+            fc, tr, eq = run_backtest(df, inst["point"], use_fib=True, fib_tol=tol)
+            s = compute_stats(fc, tr, eq)
+            s.update({"asset": a, "tf": label, "ccy": inst["ccy"],
+                      "tol": tol, "swing": swing,
+                      "start": str(p0)[:10], "end": str(p1)[:10]})
+            results.append(s)
+
+    print("\n" + "#" * 92)
+    print("  MATRICE CONSOLIDEE - Filtre Fib ON (tol par actif), swing par TF, "
+          "macro ~1an")
+    print("#" * 92)
+    hdr = (f"  {'Actif':5} | {'TF':6} | {'Tol%':>4} | {'Sw':>2} | {'Trades':>6} | "
+           f"{'WinR':>5} | {'PF':>6} | {'Profit Net':>13} | {'DD%':>7} | Periode")
+    print(hdr)
+    print("  " + "-" * 96)
+    for s in results:
+        print(f"  {s['asset']:5} | {s['tf']:6} | {s['tol']:>4.1f} | {s['swing']:>2} | "
+              f"{s['n_trades']:>6} | {s['win_rate']:>4.0f}% | {s['pf']:>6.2f} | "
+              f"{s['net_profit']:>9,.0f} {s['ccy'][:3]} | {s['dd_pct']:>6.1f}% | "
+              f"{s['start']}->{s['end']}")
+    print("#" * 92)
+    return results
+
+
 def main():
     intervals = {"1d": "Daily", "4h": "4H", "1wk": "Weekly"}
+    do_matrix = any(a in ("matrix", "--matrix", "all") for a in sys.argv[1:])
     do_opt    = any(a in ("opt", "--opt", "optimize") for a in sys.argv[1:])
     do_swing  = any(a in ("swing", "--swing", "optswing") for a in sys.argv[1:])
     swing_fib = any(a in ("fib", "--fib", "withfib") for a in sys.argv[1:])
     inst_args = [a for a in sys.argv[1:] if a.upper() in INSTRUMENTS]
     iv_args   = [a for a in sys.argv[1:] if a in intervals]
+
+    if do_matrix:
+        assets = [a.upper() for a in inst_args] or list(INSTRUMENTS.keys())
+        ivs = {iv: intervals[iv] for iv in (iv_args or ["1d", "1wk", "4h"])}
+        run_matrix(assets, ivs)
+        return
+
     if not inst_args:
         inst_args = ["NQ"]          # defaut : Nasdaq
     if not iv_args:
