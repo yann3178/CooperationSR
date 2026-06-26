@@ -23,7 +23,8 @@
     <= RiskPctPerTrade % du capital disponible (InitialCapital + NetProfit).
 
   Note : ordres "this bar on close" pour coller au backtest (entree/sortie au
-  close du signal). MaxBarsBack : Auto, ou >= MacroLookback + SwingWindow + 30.
+  close du signal). MaxBarsBack : Auto-detect, ou >= Max(MacroLookback,
+  SwingSearchBars) + 30.
 ============================================================================ }
 
 Inputs:
@@ -38,7 +39,8 @@ Inputs:
     UseRiskFilter( true ),
     RiskPctPerTrade( 5.0 ),
     InitialCapital( 300000 ),
-    NumContracts( 1 );
+    NumContracts( 1 ),
+    SwingSearchBars( 300 );    { profondeur de recherche du dernier pivot }
 
 Variables:
     Strength( 0 ),
@@ -76,9 +78,12 @@ BBmid    = Average( Close, BBLength );
 BBlower  = BBmid - BBStdDevs * StandardDev( Close, BBLength, 1 );
 ADXValue = ADX( ADXLength );
 
-{ ---------- Swings (pivots natifs MultiCharts, confirmes par MC) ---------- }
-SHval = PivotHighVS( 1, High, Strength, Strength, 1 );
-SLval = PivotLowVS(  2, Low,  Strength, Strength, 1 );
+{ ---------- Swings (pivots natifs MultiCharts, confirmes par MC) ----------
+  Le 5e parametre (Length) est une fenetre de recherche LARGE : la fonction
+  renvoie ainsi directement la valeur du DERNIER pivot confirme (report auto),
+  ou -1 tant qu'aucun pivot n'existe. MultiCharts gere le delai de confirmation. }
+SHval = PivotHighVS( 1, High, Strength, Strength, SwingSearchBars );
+SLval = PivotLowVS(  2, Low,  Strength, Strength, SwingSearchBars );
 if SHval <> -1 then begin LastSwingHigh = SHval; HaveSH = true; end;
 if SLval <> -1 then begin LastSwingLow  = SLval; HaveSL = true; end;
 
