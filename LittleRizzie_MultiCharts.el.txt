@@ -1,0 +1,206 @@
+{ ============================================================================
+  Strategie "Little Rizzie" (Marci Silfrain) - Portage MultiCharts EasyLanguage
+  Long uniquement. Portage fidele du backtest Python (backtest_rizzie.py).
+
+  Logique (par barre, decisions a la CLOTURE de la barre) :
+    - Bandes de Bollinger (20, 2.0) sur le Close (ecart-type POPULATION).
+    - Swings : pivots sur fenetre centree SwingWindow (k = (SwingWindow-1)/2
+      barres de confirmation de chaque cote). Un pivot centre k barres en
+      arriere est confirme a la barre courante -> pas de lookahead.
+      On memorise le DERNIER swing high / low valide (carry-forward).
+    - Structure : passe "bear" quand Close < dernier swing low valide.
+      Pendant la phase bear, BBreach=true des qu'un Close <= bande basse.
+    - ENTREE long (toutes conditions) : structure bear ET BBreach ET
+      Close > dernier swing high (Break of Structure) ET ADX(14) > seuil
+      ET (option) Confluence Fibonacci ET (option) risque trade <= % capital.
+    - SORTIE : Close < dernier swing low valide (trailing stop structurel).
+
+  Filtre Fibonacci : sur MacroLookback barres, Macro_High/Macro_Low absolus ;
+    valide seulement si le High survient APRES le Low. Niveaux 38.2/50/61.8 %.
+    Cible Rizzie = SwingLow - (SwingHigh - SwingLow). Confluence si la cible est
+    a +/- FibTolerancePct % d'un niveau.
+
+  Filtre de risque : risque = (Close - dernier swing low) * BigPointValue *
+    NumContracts. On n'entre que si risque <= RiskPctPerTrade % du capital
+    disponible (InitialCapital + NetProfit realise).
+
+  IMPORTANT (execution) :
+    Les ordres sont passes "this bar on close" pour reproduire exactement le
+    backtest Python (entree/sortie au close du signal). On maintient un drapeau
+    interne InPos synchronise avec ces ordres on-close.
+    -> Dans les proprietes de la strategie, regler le remplissage sur la cloture
+       de barre. Pour une execution plus conservatrice, remplacer
+       "this bar on close" par "next bar at market" (remplissage a l'ouverture
+       suivante) ; la logique de calcul reste identique.
+
+  MaxBarsBack : regler sur Auto-detect, ou >= MacroLookback + 2*k + 30.
+============================================================================ }
+
+Inputs:
+    BBLength( 20 ),
+    BBStdDevs( 2.0 ),
+    SwingWindow( 5 ),          { impair ; k = (SwingWindow-1)/2 }
+    ADXLength( 14 ),
+    ADXThreshold( 20 ),
+    UseFibFilter( true ),
+    FibTolerancePct( 3.0 ),    { tolerance Fib en %, a regler par actif }
+    MacroLookback( 200 ),      { fenetre macro EN BARRES (auto-similaire au TF) }
+    UseRiskFilter( true ),
+    RiskPctPerTrade( 5.0 ),    { risque max par trade, en % du capital }
+    InitialCapital( 300000 ),
+    NumContracts( 1 );
+
+Variables:
+    k( 0 ),
+    BBmid( 0 ),
+    BBlower( 0 ),
+    ADXValue( 0 ),
+    MacroHigh( 0 ),
+    MacroLow( 0 ),
+    MacroRng( 0 ),
+    MacroBull( false ),
+    Fib382( 0 ),
+    Fib50( 0 ),
+    Fib618( 0 ),
+    LastSwingHigh( 0 ),
+    LastSwingLow( 0 ),
+    HaveSH( false ),
+    HaveSL( false ),
+    IsBear( false ),
+    BBreach( false ),
+    InPos( false ),
+    RizzieTarget( 0 ),
+    TradeRisk( 0 ),
+    AvailCap( 0 ),
+    CondStruct( false ),
+    CondBOS( false ),
+    CondADX( false ),
+    CondFib( false ),
+    CondRisk( false ),
+    isPH( false ),
+    isPL( false ),
+    j( 0 ),
+    tol( 0 );
+
+Once
+    k = IntPortion( ( SwingWindow - 1 ) / 2 );
+
+{ ---------- Indicateurs ---------- }
+BBmid   = Average( Close, BBLength );
+BBlower = BBmid - BBStdDevs * StandardDev( Close, BBLength, 1 );  { 1 = population }
+ADXValue = ADX( ADXLength );
+
+MacroHigh = Highest( High, MacroLookback );
+MacroLow  = Lowest( Low, MacroLookback );
+MacroRng  = MacroHigh - MacroLow;
+{ Dynamique haussiere : le plus haut survient APRES le plus bas
+  (HighestBar/LowestBar = nombre de barres en arriere ; plus petit = plus recent) }
+MacroBull = ( MacroRng > 0 ) and ( HighestBar( High, MacroLookback ) < LowestBar( Low, MacroLookback ) );
+if MacroRng > 0 then
+begin
+    Fib382 = MacroHigh - 0.382 * MacroRng;
+    Fib50  = MacroHigh - 0.500 * MacroRng;
+    Fib618 = MacroHigh - 0.618 * MacroRng;
+end;
+
+{ ---------- Detection des swings (anti-lookahead) ----------
+  La barre centree k barres en arriere (High[k]/Low[k]) est-elle un pivot
+  strict de la fenetre [0..2k] ? Confirmee a la barre courante. }
+if CurrentBar > 2 * k then
+begin
+    isPH = true;
+    isPL = true;
+    for j = 0 to 2 * k
+    begin
+        if j <> k then
+        begin
+            if High[k] <= High[j] then isPH = false;
+            if Low[k]  >= Low[j]  then isPL = false;
+        end;
+    end;
+    if isPH then
+    begin
+        LastSwingHigh = High[k];
+        HaveSH = true;
+    end;
+    if isPL then
+    begin
+        LastSwingLow = Low[k];
+        HaveSL = true;
+    end;
+end;
+
+{ ---------- 1) SORTIE (position ouverte) ---------- }
+if InPos then
+begin
+    if HaveSL and ( Close < LastSwingLow ) then
+    begin
+        Sell ( "RizzieLX" ) NumContracts contracts this bar on close;
+        InPos   = false;
+        IsBear  = true;        { la cassure du swing low remet la structure en bear }
+        BBreach = false;
+    end;
+end;
+
+{ ---------- 2) Mise a jour structure / suivi bande basse (si a plat) ---------- }
+if InPos = false then
+begin
+    if HaveSL and ( Close < LastSwingLow ) then
+    begin
+        if IsBear = false then
+        begin
+            IsBear  = true;
+            BBreach = false;
+        end;
+    end;
+    if IsBear and ( Close <= BBlower ) then
+        BBreach = true;
+end;
+
+{ ---------- 3) ENTREE (si a plat) ---------- }
+if InPos = false then
+begin
+    CondStruct = IsBear and BBreach;
+    CondBOS    = HaveSH and ( Close > LastSwingHigh );
+    CondADX    = ( ADXValue > ADXThreshold );
+
+    { Filtre de Confluence Fibonacci (optionnel) }
+    CondFib = true;
+    if UseFibFilter then
+    begin
+        CondFib = false;
+        if MacroBull and HaveSH and HaveSL then
+        begin
+            RizzieTarget = LastSwingLow - ( LastSwingHigh - LastSwingLow );
+            if RizzieTarget > 0 then
+            begin
+                tol = FibTolerancePct / 100;
+                if ( Fib382 > 0 ) and ( AbsValue( RizzieTarget - Fib382 ) / Fib382 <= tol ) then CondFib = true;
+                if ( Fib50  > 0 ) and ( AbsValue( RizzieTarget - Fib50  ) / Fib50  <= tol ) then CondFib = true;
+                if ( Fib618 > 0 ) and ( AbsValue( RizzieTarget - Fib618 ) / Fib618 <= tol ) then CondFib = true;
+            end;
+        end;
+    end;
+
+    { Filtre de risque par trade (optionnel) }
+    CondRisk = true;
+    if UseRiskFilter then
+    begin
+        CondRisk = false;
+        if HaveSL and ( Close > LastSwingLow ) then
+        begin
+            TradeRisk = ( Close - LastSwingLow ) * BigPointValue * NumContracts;
+            AvailCap  = InitialCapital + NetProfit;   { equite realisee }
+            if TradeRisk <= ( RiskPctPerTrade / 100 ) * AvailCap then
+                CondRisk = true;
+        end;
+    end;
+
+    if CondStruct and CondBOS and CondADX and CondFib and CondRisk then
+    begin
+        Buy ( "RizzieLE" ) NumContracts contracts this bar on close;
+        InPos   = true;
+        IsBear  = false;       { Break of Structure haussier -> structure bull }
+        BBreach = false;
+    end;
+end;
