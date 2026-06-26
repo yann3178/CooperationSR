@@ -14,7 +14,9 @@ Strategie (Long uniquement) :
                    (filtre de force de tendance) ET (optionnel) la Confluence
                    Fibonacci : la cible baissiere Rizzie (SwingLow - (SwingHigh
                    - SwingLow)) tombe pres d'un niveau de Fib (38.2/50/61.8 %)
-                   du dernier macro bull run, a FIB_TOLERANCE_PCT % pres.
+                   du dernier macro bull run, a FIB_TOLERANCE_PCT % pres ET
+                   (optionnel) le risque du trade (entree - stop SwingLow, x
+                   valeur du point) reste sous RISK_PCT_PER_TRADE du capital.
                    -> achat de 1 contrat a la cloture.
   - Sortie       : Trailing stop structurel. On clot la position si le Close
                    journalier passe sous le dernier Swing Low valide.
@@ -43,8 +45,14 @@ BB_STD          = 2.0
 SWING_WINDOW    = 5                 # fenetre glissante totale (pivot)
 ADX_PERIOD      = 14                # periode de l'ADX
 ADX_THRESHOLD   = 20.0             # filtre d'entree : ADX doit etre > ce seuil
-INITIAL_CAPITAL = 100_000.0
+INITIAL_CAPITAL = 300_000.0
 CONTRACTS       = 1
+
+# --- Filtre de risque par trade -------------------------------------------
+# On n'entre que si le risque (distance entree -> stop structurel last_swing_low,
+# x valeur du point x contrats) reste sous un % du capital disponible.
+USE_RISK_FILTER    = True
+RISK_PCT_PER_TRADE = 0.01           # 1 % du capital disponible par defaut
 
 # --- Filtre de Confluence Fibonacci (methode Marci Silfrain) ---------------
 # Active une condition d'entree supplementaire : la cible baissiere theorique
@@ -278,9 +286,12 @@ def add_fib(df, lookback=MACRO_LOOKBACK):
     return df
 
 
-def run_backtest(df, point_value, use_fib=None, fib_tol=None):
-    use_fib = USE_FIB_FILTER if use_fib is None else use_fib
-    fib_tol = FIB_TOLERANCE_PCT if fib_tol is None else fib_tol
+def run_backtest(df, point_value, use_fib=None, fib_tol=None,
+                 use_risk=None, risk_pct=None):
+    use_fib  = USE_FIB_FILTER if use_fib is None else use_fib
+    fib_tol  = FIB_TOLERANCE_PCT if fib_tol is None else fib_tol
+    use_risk = USE_RISK_FILTER if use_risk is None else use_risk
+    risk_pct = RISK_PCT_PER_TRADE if risk_pct is None else risk_pct
     fib_cols = [f"fib_{int(r*1000)}" for r in FIB_LEVELS] if use_fib else []
 
     equity_curve = []
@@ -290,6 +301,7 @@ def run_backtest(df, point_value, use_fib=None, fib_tol=None):
     in_position = False
     entry_price = np.nan
     entry_date  = None
+    entry_risk  = np.nan
 
     # Etat de structure de marche pour la condition d'entree :
     #   structure == "bear" apres une cassure baissiere (close < swing low).
@@ -321,6 +333,7 @@ def run_backtest(df, point_value, use_fib=None, fib_tol=None):
                     "exit_price":  close,
                     "points":      close - entry_price,
                     "pnl":         pnl,
+                    "risk":        entry_risk,
                 })
                 in_position = False
                 entry_price = np.nan
@@ -370,10 +383,22 @@ def run_backtest(df, point_value, use_fib=None, fib_tol=None):
                                 cond_fib = True
                                 break
 
-            if cond_struct and cond_bos and cond_adx and cond_fib:
+            # ----- Filtre de risque par trade (optionnel) -----
+            # Risque = (entree - stop structurel last_swing_low) x point x lots.
+            # On n'entre que s'il reste sous risk_pct du capital disponible (cash).
+            trade_risk = np.nan
+            if not np.isnan(swing_low) and close > float(swing_low):
+                trade_risk = (close - float(swing_low)) * point_value * CONTRACTS
+            cond_risk = True
+            if use_risk:
+                cond_risk = (not np.isnan(trade_risk)) and \
+                    (trade_risk <= risk_pct * cash)
+
+            if cond_struct and cond_bos and cond_adx and cond_fib and cond_risk:
                 in_position = True
                 entry_price = close
                 entry_date  = date
+                entry_risk  = trade_risk
                 # Le BoS haussier fait basculer la structure en mode haussier.
                 structure = "bull"
                 bb_breach = False
@@ -397,6 +422,7 @@ def run_backtest(df, point_value, use_fib=None, fib_tol=None):
             "exit_price":  last_close,
             "points":      last_close - entry_price,
             "pnl":         pnl,
+            "risk":        entry_risk,
             "note":        "cloture forcee fin de backtest",
         })
 
@@ -468,8 +494,9 @@ def summarize(final_cash, trades, eq, label="Daily", period_txt=None,
         else:
             show["entry_date"] = pd.to_datetime(show["entry_date"]).dt.date
             show["exit_date"]  = pd.to_datetime(show["exit_date"]).dt.date
-        for col in ("entry_price", "exit_price", "points", "pnl"):
-            show[col] = show[col].round(2)
+        for col in ("entry_price", "exit_price", "points", "pnl", "risk"):
+            if col in show.columns:
+                show[col] = show[col].round(2)
         with pd.option_context("display.max_rows", None, "display.width", 120):
             print(show.to_string(index=False))
 
@@ -502,11 +529,15 @@ def prepare(inst_key, interval, swing=None, macro=None):
 
 
 def run_one(inst_key, interval, label):
-    df, inst, (p0, p1) = prepare(inst_key, interval)
-    final_cash, trades, eq = run_backtest(df, inst["point"])
-    fib_txt = (f"  (Filtre Fib : ON, tolerance {FIB_TOLERANCE_PCT}%)"
+    df, inst, (p0, p1) = prepare(inst_key, interval,
+                                 swing=SWING_BY_TF.get(interval, SWING_WINDOW))
+    final_cash, trades, eq = run_backtest(df, inst["point"],
+                                          fib_tol=inst["fib_tol"])
+    fib_txt = (f"  (Filtre Fib : ON, tolerance {inst['fib_tol']}%)"
                if USE_FIB_FILTER else "  (Filtre Fib : OFF)")
-    print(fib_txt)
+    risk_txt = (f"  (Filtre risque : ON, max {RISK_PCT_PER_TRADE*100:.1f}% du capital)"
+                if USE_RISK_FILTER else "  (Filtre risque : OFF)")
+    print(fib_txt + risk_txt)
     summarize(final_cash, trades, eq, label=label, period_txt=f"{p0} -> {p1}",
               inst_name=inst["name"], ccy=inst["ccy"])
 
