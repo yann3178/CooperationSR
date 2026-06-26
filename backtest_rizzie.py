@@ -52,7 +52,7 @@ CONTRACTS       = 1
 # On n'entre que si le risque (distance entree -> stop structurel last_swing_low,
 # x valeur du point x contrats) reste sous un % du capital disponible.
 USE_RISK_FILTER    = True
-RISK_PCT_PER_TRADE = 0.01           # 1 % du capital disponible par defaut
+RISK_PCT_PER_TRADE = 0.05           # 5 % du capital disponible par trade
 
 # --- Filtre de Confluence Fibonacci (methode Marci Silfrain) ---------------
 # Active une condition d'entree supplementaire : la cible baissiere theorique
